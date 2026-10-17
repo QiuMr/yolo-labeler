@@ -22,11 +22,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # action 版本统一用 Node 24 世代的最新主版本。
+      # 之前用的 v4/v3 都是 Node 20 世代，CI 会打一条
+      # 「Node.js 20 is deprecated ... forced to run on Node.js 24」的注解 —— 现在归零。
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 准备 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -45,31 +48,38 @@ jobs:
       - name: 类型检查 + 打包
         run: npm run build
 
-      # ⚠️ 背景：为什么非要把来源切成 workflow
+      # ⚠️ 背景：为什么必须把 Pages 来源切成 workflow
       #
-      # configure-pages 的 enablement 只在**仓库尚未启用 Pages 时**创建站点；
-      # 仓库早已是「从某个分支部署」时它会撞 409 然后静默跳过 —— **它不会切换来源**。
-      # 而只要来源还是分支，GitHub 内置的 pages-build-deployment 就会在每次 push 后
-      # 再部署一次**分支根目录**：那里只有源码 index.html、没有构建出来的 assets/，
-      # 于是线上被覆盖成「标题能看见、脚本全部 404」的坏页面，
+      # 只要来源还是「从分支部署」，GitHub 内置的 pages-build-deployment 就会在每次
+      # push 后再部署一次**分支根目录**：那里只有源码 index.html、没有构建出来的
+      # assets/，于是线上被覆盖成「标题能看见、脚本全部 404」的坏页面，
       # 而且它和我们这次部署谁后完成谁生效 —— 间歇性，极难排查。
+      #
+      # 这一步只读配置，**故意不传 enablement: true**：
+      # configure-pages 自己的输入说明写着 enablement「requires a token other than
+      # GITHUB_TOKEN ... administration:write and pages:write」。既然本仓库 Pages
+      # 早已启用，这个参数永远走不到「创建站点」分支；而一旦 Pages 被关掉，
+      # 它只会抛一个误导性的 "Resource not accessible by integration"。
+      # 不传它，报错会变成清晰的 "Please verify that the repository has Pages enabled
+      # and configured to build using GitHub Actions"，正好指向该做的事。
       - name: 读取 Pages 配置
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
+        uses: actions/configure-pages@v6
 
       # 只**探测**来源，不尝试自动切换 —— 因为自动切换在 Actions 里根本做不到：
       #
       # 修改 Pages 设置的端点是 `PUT /repos/{owner}/{repo}/pages`，
-      # GitHub REST 文档要求它同时具备「Pages: write」**和**「Administration: write」。
+      # GitHub REST 文档要求它同时具备「Pages: write」**和**「Administration: write」；
+      # configure-pages 的 enablement 说明里也写着同样的话。
       # 而 GITHUB_TOKEN 是仓库自带的临时令牌，**按设计就拿不到仓库管理权限**，
-      # 无论 `permissions:` 里写什么都不行。所以那个 PUT 是 100% 会失败的
-      # —— 之前那版真发过一次，果然失败，还把报错 `2>/dev/null` 掉了，
-      #    连失败原因都没留下。留一个必然失败的网络请求只是噪音，删掉。
+      # 无论 `permissions:` 里写什么都不行 —— 所以那个 PUT 是 100% 会失败的。
+      # 之前那版真发过一次，果然失败，还把报错 `2>/dev/null` 掉了，
+      # 连失败原因都没留下。留一个必然失败的网络请求只是噪音，删掉。
       #
       # 改成探测：来源不对就打一条 ::warning::，在 Actions 页面显眼但不染红流水线。
-      # 流水线变红并不能让站点变好，只会训练你忽略红灯。
+      # 流水线变红并不能让站点变好，只会让你习惯性忽略红灯。
       # 来源正确时这一步完全静默。
+      # 实测记录：来源是 legacy 时，注解准确显示「Pages 来源是 legacy，需手动切换」，
+      # 且 job 结论仍是 success —— 符合设计。
       - name: 检查 Pages 来源是否为 GitHub Actions
         continue-on-error: true
         env:
@@ -84,7 +94,7 @@ jobs:
           echo "::warning title=Pages 来源是 $CUR，需手动切换::请到仓库 Settings → Pages → Source 选择「GitHub Actions」。否则 GitHub 内置的分支式部署会在每次 push 后再部署一次分支根目录，把线上覆盖成「标题能看见、assets/*.js 全部 404」的坏页面，且与 Actions 部署谁后完成谁生效，表现为间歇性故障。"
 
       - name: 上传构建产物
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           # 只发 dist/，源码和 node_modules 都不进产物
           path: dist
@@ -98,4 +108,4 @@ jobs:
     steps:
       - name: 发布到 Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
