@@ -45,12 +45,32 @@ jobs:
       - name: 类型检查 + 打包
         run: npm run build
 
+      # ⚠️ 下面这两步是有因果关系的，别删任何一个：
+      #
+      # configure-pages 的 enablement 只在**仓库尚未启用 Pages 时**创建站点。
+      # 如果仓库早已是「从某个分支部署」，它会撞 409 然后静默跳过 —— **它不会切换来源**。
+      # 而只要来源还是分支，GitHub 内置的 pages-build-deployment 就会在每次 push 后
+      # 再部署一次**分支根目录**：那里只有源码 index.html、没有构建出来的 assets/，
+      # 于是线上被覆盖成一个「标题能看见、脚本全部 404」的坏页面，
+      # 而且它和我们这次部署谁后完成谁生效 —— 是间歇性的，极难排查。
       - name: 读取 Pages 配置
         uses: actions/configure-pages@v5
         with:
-          # 首次运行时自动把 Pages 来源切换成「GitHub Actions」，
-          # 省掉去 Settings 里手点那一步。仓库已经配好时这行是空操作。
           enablement: true
+
+      # 用一次 PUT 显式把来源改成 workflow，彻底停掉那条分支式部署。
+      # 来源已经正确时这个请求是幂等的（PUT 全量覆盖，没有副作用）。
+      - name: 确保 Pages 来源为 GitHub Actions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::group::切换前"
+          gh api "repos/${{ github.repository }}/pages" --jq '{build_type, source}' || true
+          echo "::endgroup::"
+          gh api --method PUT "repos/${{ github.repository }}/pages" -f build_type=workflow
+          echo "::group::切换后"
+          gh api "repos/${{ github.repository }}/pages" --jq '{build_type, source}'
+          echo "::endgroup::"
 
       - name: 上传构建产物
         uses: actions/upload-pages-artifact@v3
