@@ -1,14 +1,12 @@
 // Focused repro: does the imported image actually render on the canvas?
 // Drives headless Edge over CDP against the dev server (default http://127.0.0.1:5175).
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { HERE, EDGE } from './env.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const APP_URL = process.env.APP_URL || 'http://localhost:5175/';
 const CDP = 9344;
 

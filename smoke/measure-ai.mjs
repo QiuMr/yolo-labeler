@@ -1,17 +1,15 @@
 // Measure AI bootstrap: engine boot (local loader) + built-in model auto-load + session create + warmup.
 // Drives headless Edge over CDP; records resource timing after each phase.
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { HERE, EDGE, resolveModelPath } from './env.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const APP_URL = process.env.APP_URL || 'http://localhost:5175/';
 const CDP = 9346;
-const MODEL = 'C:\\Users\\13114\\Desktop\\Python项目测试\\搞一个超简单高颜值的YOLO标注工具1\\ort.js推理测试1\\yolo26n.onnx';
+const MODEL = resolveModelPath();
 const IMG_A = join(HERE, 'fixtures', 'cat-01.png');
 
 class Cdp {

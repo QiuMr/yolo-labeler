@@ -40,6 +40,19 @@ export default defineConfig({
   // 可放到任何子目录 / 任意静态托管（GitHub Pages 项目页、Netlify、Vercel、对象存储…）直接运行
   base: './',
   plugins: [stripCrossorigin(), react(), tailwindcss()],
+  build: {
+    /**
+     * 主包约 525 KB / gzip 166 KB，内容是 React 19 + Radix + 应用代码这个**不可再分的核心**
+     * —— 能拆的已经拆出去了：jszip（96 KB）与两个 Dialog（各 20 KB+）都是按需加载。
+     *
+     * Vite 默认的 500 KB 阈值是按「营销站首屏」定的口径，对这个工具不适用：
+     * 真正的大头是 42 MB 的 AI 模型，且只在用到 AI 功能时才下载，JS 这 166 KB 根本不是瓶颈。
+     * 把 React 再单独拆一个 chunk 也减不了总字节，只是把一次请求拆成两次。
+     *
+     * 设 600 而不是干脆关掉警告：以后主包真的涨上去时（比如又引了个大库），它还会响。
+     */
+    chunkSizeWarningLimit: 600,
+  },
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),

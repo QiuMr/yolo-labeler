@@ -1,15 +1,11 @@
 // End-to-end smoke test: drives the built app in headless Edge over CDP.
 // ASCII only on purpose (PowerShell mangles UTF-8 when passing args).
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { rmSync, openSync, closeSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { HERE, ROOT, EDGE } from './env.mjs';
 
-// must use fileURLToPath: URL.pathname percent-encodes non-ASCII (this path has Chinese)
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, '..');
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const PORT = 4173;
 const CDP = 9333;
 const URL_APP = `http://127.0.0.1:${PORT}/`;

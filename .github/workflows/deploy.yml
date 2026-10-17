@@ -34,6 +34,14 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 静态检查与单元测试放在 build 之前：它们是纯函数级别的快速门槛，
+      # 一旦挂了就没必要浪费时间去打包。失败即阻断部署，不会有坏产物上线。
+      - name: 静态检查
+        run: npm run lint
+
+      - name: 单元测试
+        run: npm run test:unit
+
       - name: 类型检查 + 打包
         run: npm run build
 
