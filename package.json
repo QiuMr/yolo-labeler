@@ -1,0 +1,45 @@
+{
+  "name": "yolo-labeler",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "test:parse": "npx --yes esbuild src/ai/onnxShape.ts src/utils/yoloDataset.ts src/utils/geometry.ts --format=esm --outdir=.tmp --log-level=error && node test/parse.test.mjs",
+    "test:detector": "npx --yes esbuild src/ai/detector.ts --bundle --format=esm --outfile=.tmp/detector.js --log-level=error && node test/detector.test.mjs",
+    "test:unit": "npm run test:parse && npm run test:detector",
+    "smoke": "npm run build && node smoke/make-png.mjs && node smoke/smoke.mjs",
+    "share": "npm run build && node build-share.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
+    "lucide-react": "^1.37.0",
+    "misans": "^5.0.0",
+    "next-themes": "^0.4.6",
+    "radix-ui": "^1.6.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.6.0",
+    "tw-animate-css": "^1.4.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "oxlint": "^1.79.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}

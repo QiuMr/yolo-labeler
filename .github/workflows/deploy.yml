@@ -1,0 +1,62 @@
+name: 构建并部署到 GitHub Pages
+
+# 一、推到 main 就自动构建 + 发布，仓库里只存源码、不存产物
+# 二、也可以在 Actions 页面手动触发（workflow_dispatch）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GITHUB_TOKEN 的最小权限：读仓库、写 Pages、拿 OIDC 令牌
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一个部署；新的推送直接取消排队中的旧任务
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查 + 打包
+        run: npm run build
+
+      - name: 读取 Pages 配置
+        uses: actions/configure-pages@v5
+        with:
+          # 首次运行时自动把 Pages 来源切换成「GitHub Actions」，
+          # 省掉去 Settings 里手点那一步。仓库已经配好时这行是空操作。
+          enablement: true
+
+      - name: 上传构建产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # 只发 dist/，源码和 node_modules 都不进产物
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 发布到 Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,18 @@
+# 统一按 LF 存文本，避免 Windows 上混入 CRLF 后产生「整文件都改了」的假 diff
+* text=auto eol=lf
+
+# 批处理必须保留 CRLF：cmd.exe 解析 LF 结尾的 .bat 时，goto / label 会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 大体积二进制：禁止行尾转换与文本合并
+*.onnx binary
+*.wasm binary
+*.woff2 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.rar binary

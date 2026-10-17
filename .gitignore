@@ -1,0 +1,32 @@
+# ── 依赖 ──────────────────────────────────────────────
+# 体积大且可随时用 npm ci 重装
+node_modules
+
+# ── 构建产物 ──────────────────────────────────────────
+# 由 npm run build 生成；部署走 GitHub Actions，产物不进仓库
+dist
+# npm run share 生成的发布包（同上，产物不进仓库）
+yolo-labeler-pages
+
+# ── 测试中间产物 ──────────────────────────────────────
+# test:parse / test:detector 用 esbuild 把 TS 转译到这里再跑断言，每次自动重建
+.tmp
+
+# ── 无头浏览器测试 ────────────────────────────────────
+# npm run smoke 会自己重建这两份 Edge 用户目录（各有 50+ MB）
+smoke/.edge-profile/
+smoke/.repro-profile/
+smoke/*.log
+!smoke/.gitkeep
+
+# ── 日志与打包残留 ────────────────────────────────────
+*.log
+*.rar
+
+# ── 编辑器 / 系统 ─────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.local

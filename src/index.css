@@ -1,0 +1,1357 @@
+/* Inter Variable（官方 npm 包，随产物打包，离线可用）
+   现代感最大的单一来源：界面里帧数、尺寸、坐标、计数全是数字，
+   系统字体渲染这些数字又宽又松，Inter 的数字明显更紧凑、更「工具」。 */
+@import '@fontsource-variable/inter';
+/* MiSans VF —— 小米字体，**免费商用**（须署名，见 README 的「字体授权」）。
+   在此之前中文是回落到**微软雅黑**的（Windows 上 PingFang SC 根本不存在），
+   而雅黑只有 300/400/700 三档：写 500 会被解析成 400（毫无变化）、写 600 直接跳 700，
+   **中文没有中间档**。MiSans VF 的 `font-weight: 150 700` 才让「稍微粗一点」成为可表达的事。
+
+   只引 VF 而不引 10 个静态字重：VF 单文件覆盖全部字重，省掉 10 倍体积。
+   包内按 unicode-range 切成 56 片（**按字频排序**，第 0 片就是「的一是不」这些最常用字），
+   浏览器只下载真正渲染到的分片，所以首屏代价远小于整包。
+   必须随产物打包而非挂 CDN：这个工具的定位是纯本地/离线可用。 */
+@import 'misans/lib/Normal/MiSansVF.min.css';
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* ===================================================================
+   设计令牌
+   :root 里显式声明的每一项都能被 style={{}} 与 var() 直接引用，
+   不依赖 Tailwind 是否把 @theme 变量输出到 :root。
+   =================================================================== */
+:root {
+  color-scheme: light;
+  --radius: 0.75rem;
+
+  /* ===================================================================
+     表面层级（5 级）—— 立体感的真正来源
+     -------------------------------------------------------------------
+     人眼判断「谁在谁上面」靠的是**表面明度差**，不是边框粗细。
+     旧版只有 background / card / popover 三级，结果顶栏、左栏、
+     右栏、底部条四个面板全部等亮（都是 #fff + 1px 淡线分隔），
+     整屏像一张摊平的表格 —— 这就是「不像现代」的首要原因。
+
+     现在的阶梯（明度递增）：
+       app      最灰，托住所有面板
+       inset    内凹：输入框 / 搜索框 / 计数槽（比面板略暗 = 凹进去）
+       panel    面板：顶栏 / 左栏 / 右栏
+       elevated 浮起：弹窗 / 下拉 / tooltip（与 panel 同色，靠阴影拉开）
+     app 与 panel 之间刻意只差约 3% 明度：差多了发灰发脏，
+     差少了又没层次。真正让面板「浮」起来的是 --shadow-panel。
+     =================================================================== */
+  /* Phase 8：改为「纯白主调」——app 与 panel 同色（都是纯白），
+     面板的浮起**完全交给 --shadow-panel**。见其定义处的说明。 */
+  --surface-app: #ffffff;
+  --surface-inset: #f5f7fa;
+  --surface-panel: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-hover: #f4f6f9;
+  --surface-active: #ebeff4;
+  --surface-sunken: #f3f5f8;
+
+  /* ---- 底色 / 文字（语义别名，指向上面的表面层） ---- */
+  --background: var(--surface-app);
+  --foreground: #0d1220;
+  --card: var(--surface-panel);
+  --card-foreground: #0d1220;
+  --popover: var(--surface-elevated);
+  --popover-foreground: #0d1220;
+
+  /* ---- 品牌 ---- */
+  /* Phase 8：主色由靛紫 #5b6cff 换成正蓝 #2563eb，并**清掉渐变里的紫**
+     （旧 brand-2/3 是 #7a5cf0 / #a855f7，那股紫味正是「老套」的来源）。
+     现在是 蓝 → 深蓝 → 墨蓝，末段压向近黑，呼应「一点点黑」的要求。 */
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --brand: #2563eb;
+  --brand-2: #1d4ed8;
+  --brand-3: #1e40af;
+  /* Phase 9「厚重感」：按钮/实底的**顶部亮色**，配合 --brand 做垂直渐变。
+     纯色填充是扁平的；上亮下暗 + 顶部内高光才读成「一块有体积的实体」。 */
+  --brand-hi: #3b82f6;
+
+  /* Phase 11：辅助色 —— 青。
+     加辅助色是为了「不寡」，但**不能用品红/紫**：Phase 8 的记录写着
+     旧版那股紫味正是「老套」的来源，加品红等于把去紫化退回去。
+     青（cyan）与品牌蓝同属冷色域、色相差约 45°，能拉开层次又不打架。
+     目前只用在两处：标题渐变的收尾色、Hero 角标。 */
+  --accent-cyan: #06b6d4;
+  /* 角标的三个色（底色/描边/文字）。
+     文字用 cyan-700 而不是 cyan-500：角标压在**纯白**卡片上，
+     cyan-500(#06b6d4) 对白的对比度只有约 2.3:1，远低于正文所需的 4.5:1，
+     实测截图里那行字几乎糊掉；cyan-700(#0e7490) 约 4.9:1，才算真正"看得见"。
+     卖点角标最怕的就是看不清 —— 看不清等于没做。 */
+  --accent-cyan-soft: rgba(6, 182, 212, 0.1);
+  --accent-cyan-line: rgba(6, 182, 212, 0.26);
+  /* 角标文字色之外的第四个青：不可用，见下方 --halo 说明 */
+  --accent-cyan-ink: #0e7490;
+  /* 拖放区图标的脉冲光环色。
+     刻意用**品牌蓝**而不是青：光环和图标是同一个东西的内外两层，
+     青色光环套在蓝色图标外面会读成「蓝块外面加了个青框」，两个色块打架。
+     青在这轮里只承担「小面积点缀」，占的就是标题渐变和卡片角标两处，
+     多一处都会让页面从「有重点」滑向「配色杂」。 */
+  --halo: rgba(37, 99, 235, 0.16);
+  /* 标题渐变：两段，蓝 → 青。
+     刻意不复用 .brand-text 的三段（蓝→深蓝→墨蓝）——
+     大字上三段色阶会「花」，两段才稳。
+     末端取 cyan-600(#0891b2) 而非 cyan-500(#06b6d4)：
+     大字只需满足 3:1，但 #06b6d4 只有 2.3:1（实测末几个字发飘、压不住），
+     #0891b2 约 3.7:1，既保住"青"的辨识度，收笔也不虚。 */
+  --gradient-title: linear-gradient(100deg, var(--brand) 0%, #0891b2 100%);
+
+  /* ---- 中性面 ---- */
+  --secondary: #f5f7fa;
+  --secondary-foreground: #232b3b;
+  --muted: #f5f7fa;
+  --muted-foreground: #64748b;
+  --accent: var(--surface-hover);
+  --accent-foreground: #0d1220;
+  --destructive: #e0483d;
+  --destructive-foreground: #ffffff;
+  --success: #16a34a;
+  --border: #e4e7ec;
+  --input: #d5dae1;
+  --ring: #93b4fd;
+
+  /* ---- 发丝线 ----
+     半透明而不是实色：这样同一条线放在任何背景上都自然，
+     深色主题下也只要换 rgba 的底色即可，不用重新调色阶。 */
+  /* 纯白底上没有灰色帮忙「垫」出边缘，发丝线要略强一档才看得见。 */
+  --hairline: rgba(13, 18, 32, 0.08);
+  --hairline-strong: rgba(13, 18, 32, 0.14);
+
+  /* ===================================================================
+     字号阶梯（4 + 1 级）
+     -------------------------------------------------------------------
+     旧版问题：顶栏 / 左栏 / 右栏 / 底部条的文字几乎全是 10~12px，
+     而且都挂在同一个 ink-3 上 —— 既没有大小层级，也没有颜色层级，
+     整屏读不出主次，干活久了眼睛累，观感上也廉价。
+     组件里那些 text-[10px] / text-[11px] 从 Phase 2 起一律往上提。
+     =================================================================== */
+  --text-micro: 11px; /* 角标、计数徽标、框序号 */
+  --text-caption: 12px; /* 辅助说明、字段名、次要标签 */
+  --text-body: 13px; /* 正文、列表项、按钮（= base） */
+  --text-title: 15px; /* 面板标题、类别名、文件名 */
+  --text-display: 18px; /* 空状态大标题 */
+
+  /* 行高按「密度」而不是按「字号」给：列表用 snug，大段用 normal */
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.55;
+
+  /* ---- 文字色阶（6 级）----
+     旧版只有 4 级且几乎只用了 ink-3，导致「到处都是一样的灰」。
+     新增 ink-5 专供装饰性文字（箭头、单位、计数这类不影响阅读的信息）。 */
+  --ink: #0d1220; /* 主文字：标题、类别名、文件名 */
+  --ink-2: #3f4859; /* 次要：列表项正文 */
+  --ink-3: #656e80; /* 辅助：说明、字段名、占位符 */
+  --ink-4: #8f97a8; /* 弱化：禁用、时间戳 */
+  --ink-5: #b3bac8; /* 装饰：箭头、单位、无信息量的计数 */
+
+  /* ---- 派生面（组件内联样式直接引用，必须在此显式定义） ---- */
+  --line: #e6e9ef;
+  --line-strong: #d8dde5;
+  --hover: var(--surface-hover);
+  --brand-soft: #eff6ff;
+  /* Phase 9：白色控件的「底边内阴影」色，供 .raised 使用 */
+  --edge: rgba(13, 18, 32, 0.05);
+
+  /* ---- 画布区 ----
+     保留深色：专业标注工具（CVAT / Label Studio）都是深色画布 + 浅色 UI，
+     深底能压住画面，让被标注物（往往很鲜艳）成为唯一的视觉焦点。 */
+  --canvas-bg: #0d1017;
+
+  /* ---- 落地页顶部光晕 ----
+     背景改成中性灰后，白色光晕等于看不见。这里换成**极淡的品牌色**微光：
+     大面积保持中性，靠一点点色偏引导视线到标题，不铺满全屏。 */
+  --hero-glow: radial-gradient(
+    1000px 560px at 50% -12%,
+    rgba(37, 99, 235, 0.11) 0%,
+    rgba(37, 99, 235, 0.035) 40%,
+    rgba(37, 99, 235, 0) 68%
+  );
+
+  /* ===================================================================
+     层次阴影
+     -------------------------------------------------------------------
+     现代 UI 的阴影比传统「拟物」淡得多、扩散得多：
+     近处几乎看不见（0.5~4% 透明度），远处才有形（8~14%）。
+     旧版近处就有 5% 显得脏，这里整体调淡一档。
+     =================================================================== */
+  --shadow-xs: 0 1px 2px rgba(13, 18, 32, 0.05);
+  --shadow-sm:
+    0 1px 2px rgba(13, 18, 32, 0.04), 0 2px 4px rgba(13, 18, 32, 0.04);
+  --shadow-md:
+    0 2px 4px rgba(13, 18, 32, 0.04), 0 8px 20px rgba(13, 18, 32, 0.07);
+  --shadow-lg:
+    0 4px 8px rgba(13, 18, 32, 0.04), 0 16px 40px rgba(13, 18, 32, 0.1);
+  --shadow-xl:
+    0 8px 16px rgba(13, 18, 32, 0.05), 0 28px 64px rgba(13, 18, 32, 0.14);
+
+  /* Phase 8 关键：背景与面板都变纯白后，原先 3% 的投影在白底上等于隐身，
+     面板会「糊」进背景。改成三层 —— 描边定轮廓 + 近影压边 + 远影托浮。
+     纯白主题里这是唯一承担分层的东西，不能再省。
+     Phase 9：改成「大扩散 + 负收束」的柔影（ColorOS / iOS 一路）。
+     阴影越大越柔，元素越像**有厚度的实体**；小而硬的阴影只会像贴上去的纸片。 */
+  --shadow-panel:
+    0 0 0 1px rgba(13, 18, 32, 0.06),
+    0 1px 2px rgba(13, 18, 32, 0.04),
+    0 10px 28px -6px rgba(13, 18, 32, 0.1);
+  --shadow-brand: 0 1px 2px rgba(37, 99, 235, 0.22), 0 8px 20px -4px rgba(37, 99, 235, 0.34);
+  --shadow-brand-lg: 0 2px 4px rgba(37, 99, 235, 0.24), 0 16px 36px -8px rgba(37, 99, 235, 0.4);
+
+  /* Phase 11：纯白卡片的「边缘与厚度」。
+     UI 小样建议的玻璃拟态（backdrop-filter: blur(20px)）在这页是**无效**的 ——
+     卡片背后就是纯白背景，没有任何内容可模糊，blur 的视觉输出等于零。
+     真正的病因是 --surface-app 与 --surface-panel 同色（都是 #ffffff，Phase 8 有意如此），
+     卡片与背景之间只靠投影分界，所以看着「糊」。
+     这里不动底色（不退回灰底），而是把厚度补到**边缘**上：
+     顶边一道受光高光线 + 底边内阴影 + 外投影托浮。 */
+  --shadow-card:
+    0 0 0 1px var(--hairline),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 2px 4px rgba(13, 18, 32, 0.04),
+    0 14px 34px -10px rgba(13, 18, 32, 0.14);
+  --shadow-card-hover:
+    0 0 0 1px var(--hairline-strong),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 8px rgba(13, 18, 32, 0.05),
+    0 22px 48px -12px rgba(13, 18, 32, 0.2);
+  --shadow-card-drag: 0 0 0 2px rgba(37, 99, 235, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 18px 44px -10px rgba(37, 99, 235, 0.36);
+
+  /* ===================================================================
+     「导出」主按钮（Phase 12）
+     -------------------------------------------------------------------
+     症状：顶栏其余控件都是「白底 + 发丝线 + 大扩散柔影」，
+     只有导出按钮是斜向纯渐变 + 小而硬的彩色投影，
+     形状与阴影不是一套语言 —— 于是它读起来像「贴上去的一块蓝」，
+     而不是这个界面里长出来的一个按钮。
+
+     它确实是主按钮，该被看见；问题不在「太显眼」，而在**显眼的方式不对**：
+     靠加大尺寸和饱和度硬撑，而不是靠同一种材质语言里的最高档。
+     所以做法是把材质补齐，把几何与阴影对齐全站：
+       ① 垂直渐变（上亮下暗）   → 读成「有厚度的实体」，不是一块色板
+       ② 顶部内高光             → 有受光面
+       ③ 1px 深蓝描边           → 白底上纯色块边缘会发虚，必须有硬边界
+       ④ 柔影（大扩散+负收束）  → 与 --shadow-panel / --shadow-card 同一套阴影物理
+     ④ 才是「搭」的关键：形状和阴影语言和页面其余部分一致，
+     只把**色相**这一个维度留给强调 —— 强调靠唯一性，不靠浮夸。 */
+  --gradient-export: linear-gradient(180deg, var(--brand-hi) 0%, var(--brand-2) 100%);
+  --shadow-export:
+    0 0 0 1px rgba(29, 78, 216, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 1px 2px rgba(29, 78, 216, 0.28),
+    0 8px 20px -6px rgba(37, 99, 235, 0.5);
+  /* hover：抬升 + 柔光。
+     这里**刻意不用 `0 0 0 5px`（无模糊的扩散环）**——那是 focus ring 的语法，
+     在人眼里读成「被框住了 / 被选中了」，而不是「浮起来了」；
+     而且它会和真正的 --shadow-export-focus 抢同一个语义。
+     要「点亮」就得把光**散开**：offset 0 + 大 blur + 小 spread。 */
+  --shadow-export-hover:
+    0 0 0 1px rgba(29, 78, 216, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 3px 6px rgba(29, 78, 216, 0.3),
+    0 0 18px 2px rgba(37, 99, 235, 0.34),
+    0 16px 34px -8px rgba(37, 99, 235, 0.62);
+  /* active：受光翻成上暗影、外圈辉光全收 —— 读成「被压进去」 */
+  --shadow-export-active:
+    0 0 0 1px rgba(29, 78, 216, 0.66),
+    inset 0 2px 6px rgba(8, 25, 70, 0.42),
+    0 1px 2px rgba(29, 78, 216, 0.26);
+  --shadow-export-focus: 0 0 0 3px rgba(37, 99, 235, 0.32);
+  /* 掠过按钮的那道高光 / 按下时从落点扩散的涟漪。
+     涟漪必须是**浅色**：压在这个蓝底上，任何蓝色的东西都是隐形的
+     （改之前这里就是 rgba(37,99,235,.42)，和 --brand 同色，等于没做）。 */
+  --sheen: rgba(255, 255, 255, 0.32);
+  --ripple: rgba(255, 255, 255, 0.38);
+
+  /* ===================================================================
+     动效
+     -------------------------------------------------------------------
+     「动得轻但明确」：快动作（hover/按压）110ms 收尾要干脆，
+     出现类动作（弹窗/浮层）160~240ms 要能看清方向。
+     =================================================================== */
+  --dur-fast: 110ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  /* 刻意不叫 --ease-out：Tailwind 内置 ease-out = cubic-bezier(0,0,0.2,1)，
+     同名会静默覆盖内置缓动，影响全站已有的 ease-out 用法。 */
+  --ease-smooth: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  /* ---- 圆角 ----
+     Phase 6 修正：上一轮我按「现代 UI 偏好小圆角」把 12px 往下压到 5/7/9/12，
+     方向搞反了。2025-26 年的主流（Linear / Vercel / Raycast / Arc）恰恰是
+     **更大更圆的圆角** —— 大圆角是「柔和、亲和、可点击」的直觉信号，
+     小直角反而读成「工程化、硬、2015 年的管理后台」。
+     标注工具面向小白，圆角大一点正好强化亲和感。 */
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+
+  /* ---- 渐变 ---- */
+  --gradient-brand: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+  --gradient-brand-wide: linear-gradient(
+    120deg,
+    var(--brand) 0%,
+    var(--brand-2) 48%,
+    var(--brand-3) 100%
+  );
+
+  --chart-1: #2563eb;
+  --chart-2: #1d4ed8;
+  --chart-3: #29c07a;
+  --chart-4: #f59e0b;
+  --chart-5: #e0483d;
+
+  --sidebar: var(--surface-panel);
+  --sidebar-foreground: #0d1220;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--surface-hover);
+  --sidebar-accent-foreground: #0d1220;
+  --sidebar-border: #e3e7f0;
+  --sidebar-ring: #93b4fd;
+}
+
+/* ===================================================================
+   深色主题：覆盖设计令牌。组件层（bg-card / text-foreground / border-border…）
+   都引用这些变量，所以只改这里就能整体换肤，无需改组件。
+   =================================================================== */
+.dark {
+  color-scheme: dark;
+
+  /* 深色下阶梯方向相反：明度递增 = 离观者越近。
+     app 最暗托住一切，panel 提亮，inset 压暗形成「凹」，
+     elevated 与 panel 同色但靠更重的阴影浮起。
+     （当前 UI 默认走亮色，但 next-themes 仍在，这套必须保持自洽） */
+  --surface-app: #0b0e15;
+  --surface-inset: #10141d;
+  --surface-panel: #151a25;
+  --surface-elevated: #1a2030;
+  --surface-hover: #1c2331;
+  --surface-active: #232b3a;
+  --surface-sunken: #080a10;
+
+  --background: var(--surface-app);
+  --foreground: #e7eaf3;
+  --card: var(--surface-panel);
+  --card-foreground: #e7eaf3;
+  --popover: var(--surface-elevated);
+  --popover-foreground: #e7eaf3;
+
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --brand: #3b82f6;
+  --brand-2: #2563eb;
+  --brand-3: #60a5fa;
+  --brand-hi: #60a5fa;
+  --accent-cyan: #22d3ee;
+  --accent-cyan-soft: rgba(34, 211, 238, 0.14);
+  --accent-cyan-line: rgba(34, 211, 238, 0.3);
+  /* 深色下反过来了：浅青(cyan-300)压在深底上对比度才够 */
+  --accent-cyan-ink: #67e8f9;
+  --halo: rgba(96, 165, 250, 0.22);
+  --gradient-title: linear-gradient(100deg, var(--brand) 0%, #22d3ee 100%);
+
+  --secondary: #1b2230;
+  --secondary-foreground: #c9d0e0;
+  --muted: #161c28;
+  --muted-foreground: #8b94a8;
+  --accent: var(--surface-hover);
+  --accent-foreground: #e7eaf3;
+  --destructive: #ff5d52;
+  --destructive-foreground: #ffffff;
+  --success: #2fbf6b;
+  --border: #232b3a;
+  --input: #2a3344;
+  --ring: #3b82f6;
+
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.15);
+
+  --ink: #e7eaf3;
+  --ink-2: #c2cad9;
+  --ink-3: #8b94a8;
+  --ink-4: #6b7488;
+  --ink-5: #525b6d;
+
+  --line: #232b3a;
+  --line-strong: #2e3849;
+  --hover: var(--surface-hover);
+  --brand-soft: rgba(59, 130, 246, 0.16);
+  --edge: rgba(255, 255, 255, 0.05);
+
+  --canvas-bg: #080a10;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.5), 0 8px 20px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.55), 0 16px 40px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.6), 0 28px 70px rgba(0, 0, 0, 0.6);
+  --shadow-panel:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 10px 28px -6px rgba(0, 0, 0, 0.5);
+  --shadow-brand: 0 6px 18px rgba(59, 130, 246, 0.32);
+  --shadow-brand-lg: 0 12px 34px rgba(59, 130, 246, 0.4);
+
+  /* Phase 12：上一轮加 --shadow-card 三件套时漏了深色覆盖，
+     卡片阴影在深色下仍按浅色那套 rgba(13,18,32,…) 渲染 —— 深底上的深影等于没有层次。
+     这里补齐，顺带把导出按钮令牌按深色反相（描边改白、辉光改亮蓝）。 */
+  --shadow-card:
+    0 0 0 1px var(--hairline),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 14px 34px -10px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover:
+    0 0 0 1px var(--hairline-strong),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    0 22px 48px -12px rgba(0, 0, 0, 0.6);
+  --shadow-card-drag:
+    0 0 0 2px rgba(96, 165, 250, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 18px 44px -10px rgba(59, 130, 246, 0.42);
+
+  --gradient-export: linear-gradient(180deg, var(--brand-hi) 0%, var(--brand-2) 100%);
+  --shadow-export:
+    0 0 0 1px rgba(147, 197, 253, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 8px 20px -6px rgba(59, 130, 246, 0.5);
+  --shadow-export-hover:
+    0 0 0 1px rgba(191, 219, 254, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 3px 6px rgba(0, 0, 0, 0.45),
+    0 0 20px 2px rgba(96, 165, 250, 0.4),
+    0 16px 34px -8px rgba(59, 130, 246, 0.62);
+  --shadow-export-active:
+    0 0 0 1px rgba(147, 197, 253, 0.45),
+    inset 0 2px 6px rgba(0, 15, 45, 0.55),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-export-focus: 0 0 0 3px rgba(96, 165, 250, 0.4);
+  --sheen: rgba(255, 255, 255, 0.28);
+  --ripple: rgba(255, 255, 255, 0.34);
+
+  --gradient-brand: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+  --gradient-brand-wide: linear-gradient(
+    120deg,
+    var(--brand) 0%,
+    var(--brand-2) 48%,
+    var(--brand-3) 100%
+  );
+
+  --sidebar: #0f131c;
+  --sidebar-foreground: #e7eaf3;
+  --sidebar-primary: #3b82f6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1b2230;
+  --sidebar-accent-foreground: #e7eaf3;
+  --sidebar-border: #232b3a;
+  --sidebar-ring: #3b82f6;
+
+  --hero-glow: radial-gradient(
+    1200px 620px at 50% -8%,
+    rgba(59, 130, 246, 0.2) 0%,
+    rgba(59, 130, 246, 0) 60%
+  );
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* ---- 圆角 ----
+     注意：这里刻意写**字面值**而不是 var(--radius-xs)。
+     同名 var() 自引用会被 CSS 判为循环引用，变量直接失效。
+     代价是字号/阴影/动效这几组值在 :root 与此处各写一遍 ——
+     两处都改即可，注释已标出配对位置。 */
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+
+  /* 本项目语义色：同时生成对应的 bg / text / border 工具类 */
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-ink-5: var(--ink-5);
+  --color-brand: var(--brand);
+  --color-brand-2: var(--brand-2);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent-cyan: var(--accent-cyan);
+  --color-accent-cyan-soft: var(--accent-cyan-soft);
+  --color-accent-cyan-ink: var(--accent-cyan-ink);
+  --color-halo: var(--halo);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-hover: var(--hover);
+
+  /* ---- 5 级表面（Phase 1 新增）----
+     生成 bg-surface-* / border-surface-* 工具类。
+     组件层从 Phase 2 起统一改用这些，别再直接 bg-white。 */
+  --color-surface-app: var(--surface-app);
+  --color-surface-inset: var(--surface-inset);
+  --color-surface-panel: var(--surface-panel);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-canvas-bg: var(--canvas-bg);
+
+  /* 发丝线 */
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+
+  /* ---- 字号 / 行高（Phase 1 新增，与 :root 的同名项字面值保持一致）----
+     生成 text-micro / text-caption / text-body / text-title / text-display，
+     以及 leading-tight / leading-snug / leading-normal。
+     这是解决「整屏都是 11px 灰字」的核心：先有阶梯，组件才有得选。 */
+  --text-micro: 11px;
+  --text-caption: 12px;
+  --text-body: 13px;
+  --text-title: 15px;
+  --text-display: 18px;
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.55;
+
+  /* ---- 动效 ---- 生成 duration-fast / duration-base / duration-slow
+     与 ease-out / ease-spring，替换散落的 0.14s / cubic-bezier 硬编码。 */
+  --duration-fast: 110ms;
+  --duration-base: 160ms;
+  --duration-slow: 240ms;
+  --ease-smooth: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  /* 阴影工具类（含 --shadow-panel，让「面板浮起」有统一写法） */
+  --shadow-xs: 0 1px 2px rgba(13, 18, 32, 0.05);
+  --shadow-sm:
+    0 1px 2px rgba(13, 18, 32, 0.04), 0 2px 4px rgba(13, 18, 32, 0.04);
+  --shadow-md:
+    0 2px 4px rgba(13, 18, 32, 0.04), 0 8px 20px rgba(13, 18, 32, 0.07);
+  --shadow-lg:
+    0 4px 8px rgba(13, 18, 32, 0.04), 0 16px 40px rgba(13, 18, 32, 0.1);
+  --shadow-xl:
+    0 8px 16px rgba(13, 18, 32, 0.05), 0 28px 64px rgba(13, 18, 32, 0.14);
+  --shadow-panel:
+    0 0 0 1px rgba(13, 18, 32, 0.06),
+    0 1px 2px rgba(13, 18, 32, 0.04),
+    0 10px 28px -6px rgba(13, 18, 32, 0.1);
+  --shadow-brand: 0 1px 2px rgba(37, 99, 235, 0.22), 0 8px 20px -4px rgba(37, 99, 235, 0.34);
+  --shadow-brand-lg: 0 2px 4px rgba(37, 99, 235, 0.24), 0 16px 36px -8px rgba(37, 99, 235, 0.4);
+
+  /* Phase 12：这里原有一组 --shadow-card / -hover / -drag，已删除。
+     两个原因：① 全站没人用 shadow-card 这个工具类（调用点是
+     [box-shadow:var(--shadow-card)]，运行时解析 var()，本就能正确跟随深色主题）；
+     ② @theme inline 会把值**字面内联**进生成的工具类、不经 var()，
+     一旦有人真用了它，深色模式下就会拿着浅色的 rgba(13,18,32,…) 渲染 —— 深底上的深影等于没层次。
+     留着是死代码 + 给 tailwind-merge 多挖一个（见 lib/utils.ts 的同类说明）。
+     卡片阴影现只在 :root / .dark 两处定义，单一来源。 */
+
+  /* 字体栈：Inter 排最前接管**拉丁字母与数字**（界面里的帧数、尺寸、坐标、
+     类别名里混的英文全是它出效果）；**MiSans VF 紧随其后接管中文**。
+
+     顺序不能反：MiSans 自带拉丁字母，放到 Inter 前面会把数字一并抢走，
+     而 Inter 那套为 UI 调过的紧凑数字正是「工具感」的来源。
+     系统字体（PingFang / 雅黑）现在只作最后兜底 —— 正常路径不该再走到它们。 */
+  --font-sans:
+    'Inter Variable', 'Inter', 'MiSans VF', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    'Noto Sans SC', system-ui, sans-serif;
+
+  /* 数字统一等宽：帧数、尺寸、坐标、计数会成排出现，
+     不等宽时数字左右跳动，是「工具感不足」的一个隐形来源。 */
+  --font-numeric:
+    'Inter Variable', 'Inter', 'MiSans VF', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* ===================================================================
+   基础层
+   注意：这里的所有规则必须在 @layer base 内。
+   未分层（unlayered）的 CSS 优先级高于 @layer utilities，
+   一旦把通配 padding reset 写在层外，它的优先级高于 utilities 层，
+   全站所有 padding 与 margin 工具类都会被静默清零。
+   =================================================================== */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    border: 0 solid var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    color: var(--foreground);
+    background: var(--background);
+    /* 中文基准字重：**460**，不是 400。
+       MiSans 的名义字重偏轻（400 的内部 usWeightClass 只有 330，比微软雅黑 Regular 细一档），
+       在 11~13px 的小字号 + 纯白底上会显得发虚 —— 换字体后第一眼就是这个问题。
+       460 是拿对比图逐档看出来的：430 与 400 几乎无从分辨，460 是第一个「看得出但不显重」的档位。
+
+       这件事**只有可变字重字体做得到**：微软雅黑只有 300/400/700，
+       写 500 会被 CSS 字重匹配算法解析成 400（等于没写），写 600 直接跳 700 ——
+       中文在旧字体下根本没有中间档，「稍微粗一点」是无法表达的需求。
+       字体栈最前的 Inter 同样是可变字体，会跟着一起走，中英字重不会脱节。
+       注意：TSX 里显式的 font-medium(500) / font-semibold(600) / font-bold(700) 不受这里影响，
+       它们各自覆盖（对应 MiSans 内部 380 / 450 / 630，仍是清晰的递进）。 */
+    font-weight: 460;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+    font-size: var(--text-body);
+    line-height: var(--leading-normal);
+    /* 中文界面里英文/数字才是对齐的关键，禁掉连字与字距调整，
+       否则 "1/703" 这类计数在不同数字之间会忽宽忽窄。 */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'cv05' 1;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  ::selection {
+    background: rgba(37, 99, 235, 0.22);
+  }
+
+  button {
+    font-family: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  /**
+   * 「图标 + 文字」并排时的垂直补偿。
+   *
+   * 现象：换成 MiSans 后，带图标的按钮里**文字看着比图标高**。
+   * 实测（`.tmp/align-probe.mjs`）页面上所有图标+文字按钮的偏差都是 +0.5~0.7px，方向一致。
+   *
+   * 根因：墨迹在行盒里的位置由**字体自身的上伸/下伸**决定，推导后
+   *     墨迹中心相对行盒中心的偏移 = (字体A − 字体D)/2 − (墨迹上 − 墨迹下)/2
+   * **与 line-height 无关**（行高项被抵消），所以调行高修不了；而图标是按盒中心居中的，
+   * 于是两者的中心对不上。MiSans 让中文偏上（微软雅黑恰好偏下 +0.5px），
+   * 换字体把这个原本不显眼的问题翻了个方向、变得明显。
+   *
+   * ⚠️ 试过「治本」的方案并**已撤销**：构建期给 MiSans 的 @font-face 注入
+   * `ascent-override:109%` / `descent-override:23%`（改字体的上伸下伸分配，行盒高度不变）。
+   * 机制本身成立 —— 但**那是在 100px 下验证的，而本 app 的字号是 11~15px**：
+   * `109% × 13px = 14.17` 与 `104% × 13px = 13.52` 在布局时**都被取整成 14**，
+   * 覆盖在小字号上等于没改。别再走这条路了。
+   *
+   * 所以只能在元素层补偿。用 em 而不是 px：需要的补偿量随字号走
+   * （实测 11px→0.52、12px→0.68、13px→0.70，0.04em 在这三档上都吻合）。
+   * 代价：这是全局规则，纯图标按钮的图标也会跟着上移约 0.5px。
+   * CSS 无法判断「该按钮里有没有文字」（文本节点选不中），这个代价绕不开。
+   */
+  button svg,
+  a svg {
+    transform: translateY(-0.04em);
+  }
+
+  input {
+    font-family: inherit;
+    font-size: inherit;
+  }
+
+  img {
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+}
+
+/* Tailwind 组件类会设置 display，会盖掉 UA 的 hidden；important 才能压住 */
+[hidden] {
+  display: none !important;
+}
+
+/*
+  键盘焦点可见环。
+  只有 ui/button.tsx 定义了 focus-visible 样式，界面里大量手写 <button>
+  （顶栏图标、侧栏、右侧列表行、画布缩放条）都没有 ——
+  键盘 Tab 过去时没有任何视觉提示，焦点在哪完全看不出来。
+  这里在 base 层统一兜一份，省得逐个加类。
+*/
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+/* 但鼠标点击不显示焦点环（只在键盘导航时出现） */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ===================================================================
+   组件层：可复用的外观件（工具类仍可覆盖它们）
+   =================================================================== */
+@layer components {
+  /* 微标题：分区标签统一用它。
+     字号从 10.5 → 11（micro），颜色从 ink-4 → ink-5：
+     越弱的信息越要退到背景里，标题本身才立得住。 */
+  .section-label {
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    color: var(--ink-5);
+    text-transform: uppercase;
+  }
+
+  /* 面板头 */
+  .panel-head {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 12px 9px;
+  }
+
+  /* 计数小胶囊 */
+  .count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-inset);
+    /* 内凹：和旁边「凸起」的按钮形成厚度对比，数字也更容易从背景里跳出来 */
+    box-shadow: inset 0 1px 2px rgba(13, 18, 32, 0.05);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-3);
+  }
+
+  /* Phase 9：白色控件（工具按钮 / 白底 chip）的「厚度」。
+     纯白控件在白底上没有体积感 —— 靠**底边 1px 内阴影**压出厚度，再配柔和外投影浮起。
+     这是 ColorOS 式质感的第三层（第一层是垂直渐变，第二层是顶部内高光）。 */
+  .raised {
+    box-shadow:
+      inset 0 -1px 0 var(--edge),
+      var(--shadow-xs);
+  }
+
+  .num {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.005em;
+  }
+
+  /* 品牌渐变文字 */
+  .brand-text {
+    background: var(--gradient-brand-wide);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* 标题渐变文字（Phase 11）：两段 蓝→青。
+     与 .brand-text 分开是刻意的：三段色阶铺在 52px 大字上会显得「用力过猛」，
+     标题只要一个方向、一个力度。 */
+  .title-gradient {
+    background: var(--gradient-title);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* 品牌渐变实底（按钮、徽标）
+     Phase 9：135° 斜向渐变 → **180° 垂直渐变（上亮下暗）**。
+     斜向渐变读成「一块色板」，垂直渐变才读成「一根有厚度的柱子」——
+     这是 ColorOS 按钮质感的第一层。 */
+  .surface-brand {
+    background-image: linear-gradient(180deg, var(--brand-hi) 0%, var(--brand) 100%);
+  }
+
+  /* 品牌渐变淡底（选中态、图标容器） */
+  .surface-brand-soft {
+    background-image: linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(29, 78, 216, 0.12) 100%);
+  }
+
+  /* 极细高光分隔线：跟随主题，浅色下用淡灰而不是几乎看不见的白 */
+  .brand-rule {
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      var(--line-strong),
+      transparent
+    );
+  }
+
+  /* ===================================================================
+     导出主按钮（Phase 12）
+     -------------------------------------------------------------------
+     体积、材质、阴影三件事一起说：
+
+     体积：--gradient-export 是**垂直**渐变（上亮下暗）。
+       斜向渐变在这个尺寸上读成「一块色板」，垂直渐变才读成「一根有厚度的柱子」；
+       这与全站 .surface-brand 的处理一致，所以它不是孤例。
+     阴影：走 --shadow-export，和 --shadow-panel / --shadow-card 同一套
+       「1px 硬描边 + 近影压边 + 远影大扩散」的物理 —— 这是「搭」的关键那一层。
+     材质：因为比顶栏其它控件（32px）大一号（36px），
+       它必须看起来**更实在**才能撑住这个体积，否则就成了「同一个按钮被放大」，
+       反而更显突兀。所以描边更清、高光更亮、远影更长。
+     =================================================================== */
+  .btn-export {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden; /* 裁剪掠过的高光与涟漪 */
+    border-radius: 13px;
+    background-image: var(--gradient-export);
+    color: var(--primary-foreground);
+    box-shadow: var(--shadow-export);
+    /* .btn-export 是普通 CSS（不在 @layer 内），优先级高于工具类。
+       所以「体积」这类尺寸/字重由组件用 style 给，写在这里会被盖掉 —— 别在这里加尺寸。
+
+       过渡分两档节奏：hover 用 --dur-base 慢慢「亮起来」；
+       按下要**立刻**响应（见 :active 里覆盖成 90ms）——
+       手已经按到底了按钮还在缓动，手感就是「这按钮是虚的」。 */
+    transition:
+      box-shadow var(--dur-base) var(--ease-smooth),
+      transform var(--dur-base) var(--ease-spring);
+  }
+
+  /* 受光层：hover 时在渐变上再叠一层极淡的白。
+     只加深阴影是**不够**的 —— 现实里「浮起来」的东西同时还会因为离光源更近而变亮。
+     少了这一层，hover 就只是「阴影变大了」，而不是「这个东西被点亮了」。 */
+  .btn-export::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.03));
+    opacity: 0;
+    transition: opacity var(--dur-base) var(--ease-smooth);
+    pointer-events: none;
+  }
+
+  /* 抬升 2px 才看得见（1px 在 54px 高的顶栏里读不出来），
+     但不给 4px+：顶栏是横排控件，跳太狠会像在抖。 */
+  .btn-export:hover {
+    box-shadow: var(--shadow-export-hover);
+    transform: translateY(-2px);
+  }
+  .btn-export:hover::after {
+    opacity: 1;
+  }
+
+  .btn-export:active {
+    /* 位移负责「落」（-2px → 0），缩放负责「实」（3%）。
+       只做位移的话，按钮看起来像是在往下滑，而不是被按进去。 */
+    transform: translateY(0) scale(0.97);
+    box-shadow: var(--shadow-export-active);
+    transition:
+      box-shadow 90ms var(--ease-smooth),
+      transform 90ms var(--ease-smooth);
+  }
+  /* 按下时收掉受光 → 表面暗下去，读成「被压进去了」 */
+  .btn-export:active::after {
+    opacity: 0;
+  }
+
+  /* 键盘焦点：全站唯一的**硬边环**。因为 hover 已经不用硬环了，
+     现在「硬环 = 我在这里（键盘）」这个语义是干净、不撞车的。
+     :focus-visible 与 :hover 可能同时成立，此处须位于 :hover 之后才能生效。 */
+  .btn-export:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-export-hover), var(--shadow-export-focus);
+  }
+
+  /* ---- 按下时从落点扩散的涟漪 ----
+     用 transform: scale() 而不是动画 background-size ——
+     scale 走合成层；background-size 是每帧重新光栅化整张背景，密集点击会掉帧。
+     基座是固定 200px 的圆，圆心由内联 CSS 变量 --rx / --ry 给（见 TopBar 的 onPointerDown），
+     负 margin 把圆心对到落点上。放大到 2.2 倍时有 220px 半径，
+     从按钮任意一点扩散都足够铺满（按钮最大跨度约 100px）。 */
+  .btn-ripple {
+    position: absolute;
+    left: var(--rx, 50%);
+    top: var(--ry, 50%);
+    width: 200px;
+    height: 200px;
+    margin: -100px 0 0 -100px;
+    z-index: -1;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--ripple) 0%, transparent 62%);
+    transform: scale(0);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .btn-ripple.run {
+    animation: btn-ripple 520ms var(--ease-smooth);
+  }
+
+  /* ---- 掠过按钮的一道高光 ----
+     ① **200ms 延迟是这段的关键**。没有它，鼠标在顶栏里横穿而过时每次路过都会闪一道光；
+        加上延迟后，动画在延迟期内被鼠标离开**直接取消**，
+        于是只有「停下来看它」才播，顺手划过不会触发。
+     ② 只播一次、不循环。顶栏是高频操作区，任何持续在动的东西都会变成噪音。
+     ③ 透明度压到 .32、时长拉到 640ms：宁可像光扫过，也不要像频闪。 */
+  .btn-sheen {
+    position: absolute;
+    inset: -50% -60%;
+    z-index: -1;
+    background: linear-gradient(
+      100deg,
+      transparent 38%,
+      var(--sheen) 50%,
+      transparent 62%
+    );
+    transform: translateX(-130%) skewX(-18deg);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .btn-export:hover .btn-sheen {
+    animation: btn-sheen 640ms 200ms var(--ease-smooth) both;
+  }
+
+  /* ---- 图标：按下时向下沉 1px，呼应「导出 = 往下走」这个动作语义 ----
+     hover 刻意**不给**图标位移：按钮整体已经抬了 2px，
+     图标再自己跑一次就是两层动，读起来像在抖。
+     位移只能放 svg 上（按钮的 transform 已经被抬升/缩放占满）。 */
+  .btn-export svg {
+    transition: transform var(--dur-base) var(--ease-spring);
+  }
+  .btn-export:active svg {
+    transform: translateY(1px);
+  }
+
+  /* 落地页淡网格 */
+  .dot-grid {
+    background-image: radial-gradient(
+      circle at 1px 1px,
+      rgba(14, 18, 32, 0.055) 1px,
+      transparent 0
+    );
+    background-size: 26px 26px;
+    -webkit-mask-image: radial-gradient(ellipse 78% 66% at 50% 38%, black 26%, transparent 76%);
+    mask-image: radial-gradient(ellipse 78% 66% at 50% 38%, black 26%, transparent 76%);
+  }
+
+  .dark .dot-grid {
+    background-image: radial-gradient(
+      circle at 1px 1px,
+      rgba(255, 255, 255, 0.06) 1px,
+      transparent 0
+    );
+  }
+
+  /* 噪点层（Phase 11）：用 CSS 生成分形噪声，不引图片、零额外请求。
+     透明度压到 3.5%（浅色）/ 4.5%（深色）——
+     目标是「看不出有纹理，但去掉之后会觉得平」，一旦肉眼能识别出颗粒就已经过量。
+     混合模式用 soft-light：只改变局部明暗、不改变色相，
+     所以它不会污染品牌蓝，也不会在纯白背景上留下可见的脏点。 */
+  .noise-layer {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 140px 140px;
+    mix-blend-mode: soft-light;
+  }
+  .dark .noise-layer {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+    mix-blend-mode: overlay;
+  }
+
+  /* 玻璃浮层（深色画布上的悬浮面板）
+     Phase 10：让它参与新的「厚重感」语言 ——
+     顶部内高光 0.06 → 0.12（深底上才看得见一条被照亮的边），
+     投影换成与面板同一套「大扩散 + 负收束」的柔影。 */
+  .glass {
+    background: rgba(19, 23, 34, 0.72);
+    backdrop-filter: blur(22px) saturate(165%);
+    -webkit-backdrop-filter: blur(22px) saturate(165%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.12) inset,
+      0 1px 2px rgba(0, 0, 0, 0.3),
+      0 10px 28px -6px rgba(0, 0, 0, 0.5);
+  }
+
+  .glass-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Phase 10：原来是 8px —— 不在圆角阶梯（6/9/12/16/22）里，是个孤儿值。
+       浮层容器统一 16px、内缩 4~5px，按钮取 11px 才和容器同心。 */
+    border-radius: 11px;
+    color: rgba(255, 255, 255, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    transition:
+      background-color 0.14s ease,
+      color 0.14s ease,
+      transform 0.14s ease;
+  }
+  .glass-btn:hover {
+    background: rgba(255, 255, 255, 0.13);
+    color: #fff;
+  }
+  .glass-btn:active {
+    transform: scale(0.93);
+  }
+
+  /* ---- 动画 ---- */
+  .anim-pop {
+    animation: pop-in 0.17s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+  }
+  .anim-fade {
+    animation: fade-in 0.2s ease-out;
+  }
+  .anim-up {
+    animation: slide-up 0.26s cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  .anim-rise {
+    animation: rise-in 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  }
+  .anim-drift {
+    animation: drift 17s ease-in-out infinite;
+  }
+  .anim-drift-alt {
+    animation: drift-alt 21s ease-in-out infinite;
+  }
+  .anim-breathe {
+    animation: breathe 2.6s ease-in-out infinite;
+  }
+  /* Phase 11：拖放区图标的脉冲光环。
+     不能用 .anim-breathe 代劳 —— 它靠 transform: scale() 出动画，
+     而 CSS 动画的 transform 会**盖掉**工具类的 transform，
+     于是拖拽时给图标加的 scale-110 会失效。
+     光环是图标的兄弟节点，自己独立做「扩散 + 淡出」，
+     和图标各自的 transform 互不干扰。 */
+  .anim-halo {
+    animation: halo-pulse 2.8s cubic-bezier(0.2, 0.8, 0.3, 1) infinite;
+  }
+  .anim-spin-slow {
+    animation: spin-slow 14s linear infinite;
+  }
+  .anim-dash {
+    animation: dash-move 1.5s linear infinite;
+  }
+  .anim-sweep {
+    animation: sweep 1.15s ease-in-out infinite;
+  }
+}
+
+/* 逐级入场 */
+.stagger > * {
+  animation: rise-in 0.52s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.stagger > *:nth-child(1) {
+  animation-delay: 0.04s;
+}
+.stagger > *:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.stagger > *:nth-child(3) {
+  animation-delay: 0.2s;
+}
+.stagger > *:nth-child(4) {
+  animation-delay: 0.28s;
+}
+.stagger > *:nth-child(5) {
+  animation-delay: 0.36s;
+}
+
+/* ===================================================================
+   关键帧
+   =================================================================== */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -26px, 0) scale(1.06);
+  }
+}
+
+@keyframes drift-alt {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-22px, 18px, 0) scale(1.09);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.3);
+  }
+}
+
+/* 脉冲光环：从图标外圈扩散出去并淡出，到 100% 时完全透明。
+   起始 scale 略小于 1（0.92）是为了藏在图标底下，
+   否则第一帧会露出一圈生硬的圆边。 */
+@keyframes halo-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.5;
+  }
+  70% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dash-move {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+@keyframes sweep {
+  0% {
+    transform: translateX(-115%);
+  }
+  100% {
+    transform: translateX(235%);
+  }
+}
+
+/* Phase 12：导出按钮的两个动效 */
+/* 涟漪：从落点放大到消失。
+   ① 用 scale 而非 background-size —— 前者走合成层。
+   ② 起点不是 scale(0)：留 12% 的初始半径，否则按下的第一帧会有一个
+      「从无到有」的硬边跳变，看起来像闪了一下而不是扩散开。 */
+@keyframes btn-ripple {
+  0% {
+    transform: scale(0.12);
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* 扫光：一次掠过即结束，不留尾帧内存 */
+@keyframes btn-sheen {
+  0% {
+    transform: translateX(-130%) skewX(-18deg);
+    opacity: 0;
+  }
+  22% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(130%) skewX(-18deg);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-drift,
+  .anim-drift-alt,
+  .anim-breathe,
+  .anim-halo,
+  .anim-spin-slow,
+  .anim-dash,
+  .anim-sweep,
+  .btn-sheen,
+  .btn-ripple {
+    animation: none !important;
+  }
+  /* 动效去掉后，hover / active 的反馈不能一起消失，降级为纯静态的阴影变化 */
+  .btn-export:hover,
+  .btn-export:active {
+    transform: none;
+  }
+  .btn-export svg,
+  .btn-export:active svg {
+    transform: none;
+  }
+  /* 受光层的淡入是 transition（不是 animation），上面那句 animation: none 管不到它 */
+  .btn-export::after {
+    transition: none;
+  }
+}
+
+/* 图片缩略图：让浏览器跳过视口外的渲染 */
+.cv-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 100%;
+}
+
+/* ===================================================================
+   滚动条（伪元素不参与层叠竞争，留在层外）
+   =================================================================== */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* 走主题变量而不是写死浅色：深色模式下否则是一根刺眼的浅灰条 */
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-4);
+  background-clip: content-box;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  border-width: 2px;
+}
+
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ===================================================================
+   第三方组件微调（刻意留在层外，需要压过组件自带样式）
+   =================================================================== */
+
+/* Radix ScrollArea 的滚动拇指 */
+[data-slot='scroll-area-thumb'] {
+  background: var(--line-strong);
+}
+[data-slot='scroll-area-thumb']:hover {
+  background: var(--ink-4);
+}
+
+/* Sonner 提示条 */
+section[data-sonner-toaster] {
+  font-family: var(--font-sans);
+}
+[data-sonner-toast] {
+  border-radius: 12px !important;
+  border-color: var(--border) !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 10px 14px !important;
+  font-size: 12.5px !important;
+  font-weight: 500;
+}
