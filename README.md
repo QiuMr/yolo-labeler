@@ -1,5 +1,8 @@
 # YOLO 标注 · 拖入即标
 
+[![构建并部署到 GitHub Pages](https://github.com/QiuMr/yolo-labeler/actions/workflows/deploy.yml/badge.svg)](https://github.com/QiuMr/yolo-labeler/actions/workflows/deploy.yml)
+[![在线使用](https://img.shields.io/badge/在线使用-qiumr.github.io-5b6cff)](https://qiumr.github.io/yolo-labeler/)
+
 一个纯前端的 YOLO 目标检测标注工具。没有后端、没有账号、不用配置，**拖进图片就能开始标**。
 所有图片和标注都保存在你自己的浏览器里，不上传任何服务器。
 
@@ -18,43 +21,92 @@
 - 单击选中，拖框内移动，拖八个角点缩放
 - 双击框 / 双击标签名 / 点标签条：快速改类别
 - 滚轮以光标为中心缩放，空格或右键拖动平移
-- 靠近图片边缘自动吸附
-- 按住 Shift 画正方形
+- 靠近图片边缘自动吸附；按住 Shift 画正方形
+- 多个框叠在一起时，原地点击在它们之间轮换选中
 - 100 步撤销 / 重做
+- **触屏**：单指画框，双指捏合缩放 + 拖动平移（第二根指落下会自动放弃进行中的画框，不打架）
+
+**AI 辅助标注**（可选，需自己提供模型文件）
+- **点击标注**：点一下物体就自动生成贴合物体的框（本地 MobileSAM 交互式分割）
+  - **先选好类别再点**，出来的框直接带该类别，不用二次指定
+  - 左键点前景、右键点排除区域、`Esc` 退出
+  - 想在被框住的物体上再画新框，**按住 Shift 点**（跳过命中检测）
+- **YOLO 批量检测**：加载自己的 `.onnx` 批量跑，可选「仅未标注」或「全部重跑」
+  - 自动识别端到端（NMS-Free，如 YOLO26 / YOLOv10）与经典检测头两种输出布局
+  - 输入尺寸从模型里读，不写死 640
+  - 推理失败的图会单独计数上报，区分「模型没识别到」与「这张图崩了」
+  - 模型选一次就存在浏览器里，下次自动复用
+- **导入已有数据集**：拖入 YOLO 格式的 `images/` + `labels/` + `classes.txt` / `data.yaml`，
+  标注会自动接回对应的图（支持四种 `names:` 写法、脏数据逐行容错）
+  - 已有标注**绝不会被覆盖**（只给一个框都没有的图套用）
+  - 标注文件重名且内容冲突时判为歧义、跳过并如实上报，**宁可少导入也不静默错标**
 
 **标签**
 - 不再有自动创建的默认标签：一个类别都没有时，画完框会直接让你输入名字，第一个类别就地建好
 - 允许一个标签都没有；未分类的框在画布上画成灰色虚线框
 - 按 `1`~`9` 直接切换标签
-- 点色块换颜色，双击改名
+- 点色块换颜色，双击改名；不允许重名（重名会被拦下）
+- **类别显隐**：点标签行的眼睛按钮临时隐藏某类，画布不绘制也不响应点击
+  （隐藏了当前选中框所属类别时会自动取消选中，隐藏激活类别时会自动换一个可见的，
+  避免出现「看不见还能删」和「画完即隐身」）
 - 删除标签只把它的框退回「未分类」，不会销毁已经画好的标注
 - 未分类的框不会被导出（三种格式都需要类别）；导出面板会显示数量并给出提示
 
+**浏览与组织**
+- 缩略图侧栏，带序号和标注数量
+- **虚拟滚动**：DOM 只保留视口内的卡片，700 张图实测只挂 18 个卡片，滚动条总高偏差为 0
+- 侧栏**按名称搜索**（不区分大小写，`Esc` 一键清空，无匹配时给「清除筛选」按钮）
+- **排序**：按名称升序 / 降序
+- **拖拽重排**：悬停缩略图出现抓手，拖到目标位置即重排（排序与重排都可撤销）
+- `N` 跳到下一张**未标注**的图，全标完会有提示
+- 顶部实时显示标注进度
+
+**批量提效**
+- **复制上一张**：把上一张图的标注整张复制过来（适合连续帧 / 同场景多图）
+- **套用当前类别**：把当前激活类别一键套用到本图所有未分类框
+- **多选**：勾选多个框后批量改类别，标大量同类图时省很多重复动作
+
+**键盘可达性**
+- `Tab` / `Shift+Tab` 在当前图的所有框之间循环选中
+- 右侧列表项和多选框支持 `Enter` / `Space`
+- 顶栏按钮、列表行、侧栏卡片都能正常 `Tab` 到（有全局 `:focus-visible` 焦点环）
+
 **数据**
 - 自动保存到浏览器 IndexedDB，刷新 / 关掉再打开都还在
-- 缩略图侧栏，带序号和标注数量，几千张图也不卡
-- 顶部实时显示标注进度
+- 图片二进制只写一次，之后只增量回写变动过的标注
+- **「关闭项目」前会提醒**：数据只在本地，记得导出或备份
+- **保存失败不再静默**：存储写满会明确提示，且失败的那批改动**下次会自动重试**
+  （不会出现「以为存上了、刷新才发现丢了」）
+- **图片丢失不连带丢标注**：重新导入同名图片即可把标注接回
+- **备份 / 恢复**：顶栏可把整个项目导出成一个含图片与标注的 zip，也能导回来
+- **深色 / 浅色主题**切换（偏好写入浏览器本地）
 
 **导出**
 - YOLO（`.txt` + `classes.txt` + `data.yaml`）
 - COCO（`_annotations.coco.json`）
 - VOC（`.xml`）
-- 可选 train / val 划分，按文件名稳定分配，每次结果一致
+- 可选 train / val 划分，按文件名稳定分配，重新导入同一批图结果也一致
 - 可选把图片一起打包
 - 可选为没有标注的图片生成空文件（负样本）
+- **导出前自动摆正带 EXIF 旋转的图**，框和像素严格对齐；顺带自动测量「一次都没翻看过」的图
+  的尺寸，不会因为它们没打开过就被跳过
+- 导出进度条串起「测量尺寸 → 烘焙方向 → 打包 zip」三阶段
 
 ## 快捷键
 
 | 操作 | 快捷键 |
 | --- | --- |
-| 画框 | 在图上拖拽 |
+| 画框 | 在图上拖拽（按住 `Shift` 画正方形） |
 | 移动 / 缩放框 | 拖框内 / 拖角点 |
 | 切换标签 | `1` ~ `9` |
 | 改选中框的类别 | 双击框，或点底部标签 |
+| 在重叠框之间轮换 | 原地点击 / 右侧「切换重叠框」 |
+| 在框之间循环选中 | `Tab` / `Shift + Tab` |
 | 删除选中框 | `Delete` / `Backspace` |
 | 复制选中框 | `Ctrl + D` |
 | 撤销 / 重做 | `Ctrl + Z` / `Ctrl + Shift + Z` |
 | 上一张 / 下一张 | `←` `→` 或 `A` `D` |
+| 下一张**未标注**的 | `N` |
 | 缩放 | 滚轮 / `+` `-` |
 | 适应窗口 | `F` |
 | 平移画布 | 空格 / 右键 / 中键拖动 |
@@ -65,14 +117,29 @@
 
 ```bash
 npm install
-npm run dev      # 开发
-npm run build    # 类型检查 + 打包
-npm run preview  # 预览打包结果
+npm run dev        # 开发
+npm run build      # 类型检查（tsc -b）+ 打包到 dist/
+npm run preview    # 预览打包结果
+npm run lint       # oxlint
+npm run test:unit  # 单元测试：61 项断言（解析逻辑纯函数）
+npm run smoke      # 端到端冒烟：Edge 无头 + CDP 跑真实页面，28 项
+npm run share      # 生成干净的发布包 yolo-labeler-pages/（非 CI 部署用）
 ```
+
+> `test:unit` 用 esbuild 把 TS 转成 ESM 后交给 node 直接跑，不依赖任何测试框架；
+> 中间产物在 `.tmp/`，可随时删。`smoke` 需要本机装了 Edge。
+
+## 部署
+
+**推到 GitHub 就完事** —— 仓库只存源码，`push main` 后 GitHub Actions 自动构建并发布 Pages。
+
+首次需要在仓库 **Settings → Pages → Source** 选一次「GitHub Actions」。
+其它平台（对象存储 / 内网 / 离线分发包 / 本地起服务）以及 AI 模型加载失败的排查，
+见 **[发布说明.md](./发布说明.md)**。
 
 ## 技术要点
 
-- **React 19 + TypeScript + Vite + Tailwind v4 + Zustand**
+- **React 19 + TypeScript + Vite 8 + Tailwind v4 + Zustand 5**
 - **UI 组件库：shadcn/ui**（基于 Radix UI + Tailwind，`src/components/ui/`）+ **lucide-react** 图标
 - **主题**：shadcn 设计令牌（CSS 变量）+ 品牌色定制，见 `src/index.css` 的 `:root`
 - **⚠️ `@layer` 约束**：自定义的 base 样式必须写在 `@layer base { ... }` 里。未分层的
@@ -80,9 +147,19 @@ npm run preview  # 预览打包结果
   `m-*` 静默清零——功能都在，但界面挤成一团。自定义外观件写在 `@layer components`，工具类才能覆盖它
 - 画布用原生 Canvas 2D 绘制，`requestAnimationFrame` + 脏标记调度，一帧最多重绘一次
 - 平移 / 缩放 / 拖拽期间只改 ref，不触发 React 重渲染，松手才提交到 store
-- 图片解码成 `ImageBitmap` 并做 LRU 缓存；缩略图用 `IntersectionObserver` 懒生成，只解码一次
+- **画布完全独立于 React**，这是全项目最关键的架构决策：每秒 60 次拖拽走 React DOM 必然卡死
+- 图片解码成 `ImageBitmap` 并做 LRU 缓存（命中时刷新顺序，淘汰时跳过正在显示的那张）
 - 撤销栈只记录被修改那张图的标注，不做整棵状态树快照
 - 自动保存是增量的：图片二进制只写一次，只回写变动过的标注
+- **左栏虚拟滚动用「固定行高」而不是「测量行高」**：测量方案任何 1px 误差都会在几百行后
+  累积成滚动错位；锁死图区 84px + 名字行 17px 后总高是常量，永不漂移。
+  配套给卡片加 `data-image-card` 钩子（sonner 的 toast 内部也用 `data-index`，不能靠它区分）
+- **AI 分区两条独立链路**：`aiStore`（YOLO 检测）与 `segStore`（MobileSAM 点选）刻意分开，
+  因为模型来源、交互模型、生命周期都不同
+- `ai/onnxShape.ts` 是零依赖的极简 protobuf 解析，只做一件事：从模型字节里读出输入张量维度
+- **要点：YOLO26 是 NMS-Free 端到端模型**，输出 `[1, max_det, 6]`。判据不能只看「通道数 = 6」——
+  2 类模型的经典头也是 `4+2=6`，还必须要求框数量轴 `< 1000`（端到端是 `max_det≈300`，
+  经典头则是几千个锚点，量级差得开）
 - 图片列表卡片做了 `memo`，标注某张图时其它卡片不会重渲染
 - `jszip` 按需动态加载，不拖慢首屏
 - **字体**：`Inter`（拉丁与数字）+ `MiSans VF`（中文），**两者都必须是可变字体**，理由是
@@ -112,11 +189,11 @@ npx shadcn@latest add <component>   # 例如：npx shadcn@latest add command
 
 组件源码落在 `src/components/ui/`，可直接修改定制。已有：
 button / dialog / alert-dialog / dropdown-menu / tooltip / progress /
-separator / switch / scroll-area / input / label / kbd / badge / sonner。
+separator / switch / scroll-area / input / label / kbd / badge / slider / sonner。
 
 ## 为未来功能预留的扩展点
 
-- **tf.js 自动标注**：`src/store/useStore.ts` 是唯一的标注数据源（`addBox` /
+- **自动标注**：`src/store/useStore.ts` 是唯一的标注数据源（`addBox` /
   `updateBox` / `setBoxLabel` 已是纯函数式接口），模型推理只需生成矩形数组后调
   `addBox` 批量写入即可，画布 / 持久化 / 撤销全部自动生效
 - **更多导出格式**：`src/utils/exporters.ts` 的 `buildExportFiles` 是纯函数，
@@ -124,15 +201,34 @@ separator / switch / scroll-area / input / label / kbd / badge / sonner。
 - **自定义视图控件**：`src/canvas/canvasApi.ts` 已暴露 `fit / zoomBy / setSpace`，
   供快捷键或未来的工具栏调用
 
+## 已知未做（按性价比排序）
+
+1. **无 WebGPU 的 WASM 回退路径未验证** —— 显卡不支持的机器上，MobileSAM 编码可能慢到不可用
+2. **AI 推理未移出主线程**（`ort.env.wasm.proxy = true`）—— 批量标注期间界面会卡；
+   这是根治手段，但会改变 wasm 加载路径，在没有真机验证前不敢动
+3. **缩略图仍走全分辨率解码 + `toDataURL`**，几千张图会占几十 MB
+4. **导入不支持同名图**：数据集里存在 `a/x.jpg` 与 `b/x.jpg` 时会判为歧义跳过
+   （安全但不完整，彻底支持需要把图片相对目录带进 `ImageItem`）
+5. **跨视口拖拽排序不自动滚动**（拖拽时浏览器不给 `dragOver` 滚动事件）
+6. **点击标注的负点没有视觉标记**（看不到自己排除了哪块）
+7. `public/` 里的 MobileSAM 模型（42MB）随站点打包 —— 可改为让用户手动选文件
+
 ## 目录结构
 
 ```
 src/
+├─ ai/            ONNX 运行时、YOLO 检测器、MobileSAM 分割器、onnx 维度解析
 ├─ canvas/        渲染引擎与视图状态
 ├─ components/    业务组件
 │  └─ ui/         shadcn/ui 组件集（Radix + Tailwind）
-├─ store/         Zustand 状态（标注数据 / 视图 / 提示）
-├─ utils/         几何、图片缓存、导出、持久化
+├─ hooks/         跨组件共享的派生数据（如类别计数缓存）
+├─ store/         Zustand 状态（标注 / 视图 / AI / 分割 / 提示）
+├─ utils/         几何、图片缓存、导出、持久化、备份、YOLO 数据集解析
 ├─ lib/           cn() 工具（clsx + tailwind-merge）
 └─ types/         类型定义
+
+.github/workflows/   GitHub Actions 自动部署
+public/              AI 模型与 onnxruntime（随构建产物一起发布）
+smoke/               端到端冒烟测试（Edge 无头 + CDP）
+test/                单元测试（纯函数断言）
 ```
