@@ -39,7 +39,7 @@ function classicChannelFirst(nc, n, boxes) {
   const M = 4 + nc;
   const d = new Float32Array(M * n);
   boxes.forEach((b, i) => {
-    d[0 * n + i] = b.cx;
+    d[i] = b.cx;
     d[1 * n + i] = b.cy;
     d[2 * n + i] = b.w;
     d[3 * n + i] = b.h;
@@ -52,7 +52,7 @@ function classicV5(nc, n, boxes) {
   const M = 5 + nc;
   const d = new Float32Array(M * n);
   boxes.forEach((b, i) => {
-    d[0 * n + i] = b.cx;
+    d[i] = b.cx;
     d[1 * n + i] = b.cy;
     d[2 * n + i] = b.w;
     d[3 * n + i] = b.h;

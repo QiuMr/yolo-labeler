@@ -15,7 +15,7 @@ const MODEL = 'C:\\Users\\13114\\Desktop\\Python项目测试\\搞一个超简单
 const IMG_A = join(HERE, 'fixtures', 'cat-01.png');
 
 class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.listeners = []; ws.addEventListener('message', (ev) => { const m = JSON.parse(ev.data); if (m.id && this.pending.has(m.id)) { const { r, j } = this.pending.get(m.id); this.pending.delete(m.id); m.error ? j(new Error(JSON.stringify(m.error))) : r(m.result); return; } for (const f of this.listeners) f(m); }); }
+  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.listeners = []; ws.addEventListener('message', (ev) => { const m = JSON.parse(ev.data); if (m.id && this.pending.has(m.id)) { const { r, j } = this.pending.get(m.id); this.pending.delete(m.id); if (m.error) j(new Error(JSON.stringify(m.error))); else r(m.result); return; } for (const f of this.listeners) f(m); }); }
   static async connect(url) { const ws = new WebSocket(url); await new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', rej); }); return new Cdp(ws); }
   send(method, params = {}, sessionId) { this.id += 1; const id = this.id; const payload = { id, method, params }; if (sessionId) payload.sessionId = sessionId; this.ws.send(JSON.stringify(payload)); return new Promise((resolve, reject) => { this.pending.set(id, { r: resolve, j: reject }); setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); reject(new Error('timeout: ' + method)); } }, 90000); }); }
   on(fn) { this.listeners.push(fn); }

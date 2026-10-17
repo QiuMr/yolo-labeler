@@ -2,13 +2,12 @@
 // Drives headless Edge over CDP against the dev server (default http://127.0.0.1:5175).
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { rmSync, openSync, closeSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, '..');
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const APP_URL = process.env.APP_URL || 'http://localhost:5175/';
 const CDP = 9344;
@@ -211,13 +210,6 @@ try {
   const boxCount = await evalJS(`document.body.innerText.includes('1 框')`);
   const insideBox = await sample(500, 400);
 
-  const info = {
-    headerInfo,
-    centerAfterFit,
-    topLeftAfterFit,
-    boxCount,
-    insideBox,
-  };
   check('image dimensions shown in header', headerInfo.includes('400'), JSON.stringify(headerInfo));
   check('canvas center has image pixels (not black)', centerAfterFit[0] + centerAfterFit[1] + centerAfterFit[2] > 60, JSON.stringify({ centerAfterFit, topLeftAfterFit }));
   check('box drawn (1 框)', boxCount === true);

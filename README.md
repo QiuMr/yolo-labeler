@@ -189,7 +189,10 @@ npx shadcn@latest add <component>   # 例如：npx shadcn@latest add command
 
 组件源码落在 `src/components/ui/`，可直接修改定制。已有：
 button / dialog / alert-dialog / dropdown-menu / tooltip / progress /
-separator / switch / scroll-area / input / label / kbd / badge / slider / sonner。
+switch / input / label / slider / sonner。
+
+> 只保留真正在用的组件。没用到的（如 badge / kbd / separator / scroll-area）已删除 ——
+> 需要时用上面这条命令随时加回来，没必要在仓库里留一堆死文件。
 
 ## 为未来功能预留的扩展点
 
