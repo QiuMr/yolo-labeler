@@ -241,6 +241,29 @@ try {
   await waitFor(async () => (await bodyText()).includes('1 / 2'), 15000, 'editor with 2 images');
   check('two images imported', true);
 
+  // Thumbnails now go through "read size from file header -> downsample while decoding"
+  // (fixtures are 400x300, long edge > 160). Assert the image actually shows up and was
+  // reduced to 160x120. This must be checked explicitly: loadThumbnail swallows errors
+  // into an empty string, so a broken path only shows as a permanently grey tile with
+  // zero console errors.
+  const thumb = await waitFor(
+    async () =>
+      await evalJS(`
+        (() => {
+          const im = document.querySelector('[data-image-card] img');
+          if (!im || !im.src || !im.src.startsWith('data:image')) return null;
+          return { w: im.naturalWidth, h: im.naturalHeight };
+        })()
+      `),
+    10000,
+    'thumbnail rendered',
+  );
+  check(
+    'thumbnail rendered at reduced size',
+    thumb.w === 160 && thumb.h === 120,
+    `${thumb.w}x${thumb.h}`,
+  );
+
   const waitCanvas = async () => {
     const box = await evalJS(`
       (() => {
