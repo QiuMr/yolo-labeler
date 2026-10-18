@@ -513,6 +513,72 @@ try {
     JSON.stringify(vp),
   );
 
+  // ---- 9c. 引擎切换（YOLOE 20MB / DINOv2 85MB）-----------------------------
+  // 两条链路的原理不同、擅长的场景不同，界面上并列摆出来让用户自己比。
+  // 这里验证三件事：两个选项都在、默认是 YOLOE、**切换本身不会触发下载**
+  // （模型是点了动作按钮才下的，切个引擎就偷偷下 85MB 是不可接受的）。
+  const eng = await evalJS(`
+    (() => {
+      const btns = Array.from(document.querySelectorAll('[data-vp-engine]'));
+      return {
+        count: btns.length,
+        ids: btns.map((b) => b.getAttribute('data-vp-engine')),
+        onIds: btns.filter((b) => b.getAttribute('data-vp-engine-on') === '1')
+          .map((b) => b.getAttribute('data-vp-engine')),
+        enabled: btns.every((b) => b.disabled === false),
+      };
+    })()
+  `);
+  check('both engines are offered', eng.count === 2 && eng.ids.join(',') === 'yoloe,dino', JSON.stringify(eng));
+  check('YOLOE is the default engine', eng.onIds.length === 1 && eng.onIds[0] === 'yoloe', JSON.stringify(eng));
+
+  const switched = await evalJS(`
+    (() => {
+      const d = document.querySelector('[data-vp-engine="dino"]');
+      if (!d || d.disabled) return false;
+      d.click();
+      return true;
+    })()
+  `);
+  await sleep(600);
+  const afterSwitch = await evalJS(`
+    (() => {
+      const btns = Array.from(document.querySelectorAll('[data-vp-engine]'));
+      const panel = document.querySelector('[data-vp-panel]');
+      const text = panel ? panel.innerText : '';
+      const trial = document.querySelector('[data-vp-trial]');
+      return {
+        onIds: btns.filter((b) => b.getAttribute('data-vp-engine-on') === '1')
+          .map((b) => b.getAttribute('data-vp-engine')),
+        hasStrictness: text.includes('匹配严格度'),
+        hasConfidence: text.includes('置信度阈值'),
+        trialEnabled: !!trial && trial.disabled === false,
+        downloading: text.includes('正在准备内置模型'),
+      };
+    })()
+  `);
+  check('switching to DINOv2 flips the engine state', switched === true && afterSwitch.onIds[0] === 'dino', JSON.stringify(afterSwitch));
+  check(
+    'threshold card switches semantics (strictness, not confidence)',
+    afterSwitch.hasStrictness === true && afterSwitch.hasConfidence === false,
+    JSON.stringify(afterSwitch),
+  );
+  check(
+    'switching engine does NOT start a download',
+    afterSwitch.downloading === false && afterSwitch.trialEnabled === true,
+    JSON.stringify(afterSwitch),
+  );
+
+  // 切回默认，免得影响后面的用例
+  await evalJS(`
+    (() => {
+      const y = document.querySelector('[data-vp-engine="yoloe"]');
+      if (y) y.click();
+      return !!y;
+    })()
+  `);
+  await sleep(400);
+
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await sleep(400);

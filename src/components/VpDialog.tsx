@@ -13,7 +13,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { useVpStore, VP_MODEL_MB } from '../store/vpStore';
+import { useVpStore, VP_ENGINES, modelMbOf } from '../store/vpStore';
+import { percentFromZ, zFromPercent } from '../ai/dinoPrompt';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -42,6 +43,8 @@ interface VpDialogProps {
  * 而「多选几张」几乎没用（1 张 0.704 → 5 张 0.712）。这两件事必须让用户看得见。
  */
 export function VpDialog({ open, onClose }: VpDialogProps) {
+  const engine = useVpStore((s) => s.engine);
+  const setEngine = useVpStore((s) => s.setEngine);
   const status = useVpStore((s) => s.status);
   const error = useVpStore((s) => s.error);
   const progress = useVpStore((s) => s.progress);
@@ -95,6 +98,8 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
     return labels.filter((l) => ids.has(l.id));
   }, [labeled, refImageIds, labels]);
 
+  const isDino = engine === 'dino';
+  const modelMb = modelMbOf(engine);
   const ready = status === 'ready';
   const loading = status === 'loading';
   const working = busy !== 'none';
@@ -141,6 +146,42 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           不用准备任何文件，也不用训练 · 全程本地推理
         </div>
 
+        {/* ===== 引擎选择 =====
+            两条链路的**原理完全不同**（一个是被训练过的检测器、一个是拿特征现算的匹配），
+            擅长的场景也不同，所以并列摆出来让用户拿自己的图去比 ——
+            而不是替用户选一条、把另一条藏起来。 */}
+        <div>
+          <div className="flex rounded-[14px] border border-border bg-card p-[3px] [box-shadow:var(--shadow-xs)]">
+            {VP_ENGINES.map((e) => {
+              const on = engine === e.id;
+              return (
+                <button
+                  key={e.id}
+                  type="button"
+                  data-vp-engine={e.id}
+                  data-vp-engine-on={on ? '1' : '0'}
+                  onClick={() => setEngine(e.id)}
+                  disabled={working || loading}
+                  className={`flex-1 rounded-[10px] px-2 py-[6px] text-caption font-semibold transition-colors disabled:opacity-50 ${
+                    on ? 'bg-primary text-white' : 'text-ink-3 hover:text-ink-2'
+                  }`}
+                >
+                  {e.name}
+                  <span className={`ml-1 text-micro font-normal ${on ? 'text-white/70' : 'text-ink-4'}`}>
+                    {e.mb}MB
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-micro leading-relaxed text-ink-4">
+            {VP_ENGINES.find((e) => e.id === engine)?.tagline}
+            {isDino
+              ? ' · 参考图少（1~4 张）时更灵，多标几张反而可能变差'
+              : ' · 参考图越多越稳，适合真实照片与复杂场景'}
+          </p>
+        </div>
+
         {/* ===== 模型状态 ===== */}
         {status === 'loading' ? (
           <div className="rounded-[16px] border border-line bg-muted/60 px-4 py-4">
@@ -154,10 +195,10 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
             />
             <p className="mt-2 text-micro text-ink-4">
               {progress < 0
-                ? `正在下载（约 ${VP_MODEL_MB} MB，只有第一次需要）`
+                ? `正在下载（约 ${modelMb} MB，只有第一次需要）`
                 : progress >= 100
                   ? '下载完成，正在建立推理会话…'
-                  : `首次使用需要下载约 ${VP_MODEL_MB} MB（${progress}%）`}
+                  : `首次使用需要下载约 ${modelMb} MB（${progress}%）`}
             </p>
           </div>
         ) : status === 'error' ? (
@@ -197,8 +238,8 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
         ) : (
           <div className="rounded-[16px] border border-line bg-muted/50 px-3.5 py-3">
             <p className="text-micro leading-relaxed text-ink-3">
-              内置模型会在开始前自动下载（约 {VP_MODEL_MB} MB，只有第一次需要），
-              下载一次之后反复可用。
+              内置模型会在开始前自动下载（约 {modelMb} MB，只有第一次需要），
+              下载一次之后反复可用。两条链路各自缓存，切换回来不用重下。
             </p>
           </div>
         )}
@@ -272,7 +313,9 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
                 </div>
                 <p className="mt-2 text-micro leading-relaxed text-ink-4">
                   <span className="font-semibold text-ink-3">1 张就够</span>
-                  ，多选几乎没用（实测 1 张和 5 张效果持平）。关键是这张图要和你想标的图
+                  {isDino
+                    ? '，而且标得越多反而可能越差（实测 1 张 F1 0.75、16 张掉到 0.56 —— 例子多了原型就杂）。关键是这张图要和你想标的图'
+                    : '，多选几乎没用（实测 1 张和 5 张效果持平）。关键是这张图要和你想标的图'}
                   <span className="font-semibold text-ink-3">长得像</span>
                   —— 换地图、换怪物款式就换一张。
                 </p>
@@ -319,25 +362,35 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           </div>
         ) : null}
 
-        {/* ===== 置信度 ===== */}
+        {/* ===== 阈值 =====
+            两条链路的分数**不是一回事**：YOLOE 是模型输出的置信度（0~1），
+            DINOv2 是「高于本图均值几个标准差」。所以控件的范围、显示方式、
+            说明文字都跟着引擎换 —— 用一个数字糊弄过去只会让用户调不明白。 */}
         <div className="rounded-[16px] border border-line bg-card px-4 py-3.5 [box-shadow:var(--shadow-xs)]">
           <div className="flex items-center justify-between">
-            <span className="text-caption font-bold text-ink-2">置信度阈值</span>
+            <span className="text-caption font-bold text-ink-2">
+              {isDino ? '匹配严格度' : '置信度阈值'}
+            </span>
             <span className="num rounded-[8px] bg-muted px-1.5 py-[2px] text-micro font-bold text-primary">
-              {Math.round(conf * 100)}%
+              {isDino ? conf.toFixed(2) : `${Math.round(conf * 100)}%`}
             </span>
           </div>
           <Slider
             className="mt-3"
-            value={[Math.round(conf * 100)]}
-            min={5}
-            max={90}
+            value={[isDino ? Math.round(percentFromZ(conf) * 100) : Math.round(conf * 100)]}
+            min={isDino ? 0 : 5}
+            max={isDino ? 100 : 90}
             step={5}
-            onValueChange={(v) => setConf((v[0] ?? 25) / 100)}
+            onValueChange={(v) => {
+              const raw = v[0] ?? 0;
+              setConf(isDino ? zFromPercent(raw / 100) : raw / 100);
+            }}
             disabled={working}
           />
-          <p className="mt-2 text-micro text-ink-4">
-            调低能找出更多目标，调高则更精准 · 这个值会记住，下次不用重调
+          <p className="mt-2 text-micro leading-relaxed text-ink-4">
+            {isDino
+              ? '数值 = 高于本图平均水平几个标准差 · 实测 2.00 附近最平衡 · 这个值会记住'
+              : '调低能找出更多目标，调高则更精准 · 这个值会记住，下次不用重调'}
           </p>
         </div>
 

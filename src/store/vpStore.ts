@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { VisualPromptDetector, mergePrompts, type VpDetection } from '../ai/visualPrompt';
+import { DinoPromptDetector, mergeProtos, DINO_Z_DEFAULT, type DinoProto } from '../ai/dinoPrompt';
 import type { IRect } from '../types';
 import { loadBitmap } from '../utils/imageCache';
 import { fetchWithProgress } from '../utils/modelFetch';
@@ -21,22 +22,78 @@ import { toast } from './toastStore';
  * 画布只有一处渲染逻辑，分两份会互相盖住。产出后交给 `aiStore.setCandidates`。
  */
 
-/** 内置模型路径。用 BASE_URL 拼接，保证部署到子目录时也能取到 */
-const MODEL_URL = `${import.meta.env.BASE_URL}models/yoloe26n-vp.onnx`;
-/** 模型体积，界面文案里如实告诉用户（首次打开面板才下载） */
-export const VP_MODEL_MB = 20;
 /**
- * 置信度阈值的存储键。
- * 复用 modelStore 的「跟着模型记」机制 —— 换回这个链路时阈值还在，
- * 否则「调好阈值 → 刷新 → 回默认」会让同一批图的标注结果前后不一致。
+ * 两种引擎。
+ *
+ *  · `yoloe`：内置 YOLOE 视觉提示 —— 是个**检测器**，把参考图 + 框交给模型，模型直接出框。
+ *  · `dino` ：内置 DINOv2 特征匹配 —— 是个**特征提取器**，框内的 patch 特征当语义模板，
+ *             在目标图的 patch 特征上滑动匹配。模型本身不输出框，框是外面算出来的。
+ *
+ * 为什么两条都要：它们擅长的场景不同（同一批图、同一评测口径的实测）——
+ *   · 参考图少（1~4 张）：DINOv2 明显更强（k=1 时 F1 0.750 vs NCC 0.153）
+ *   · 参考图多（16+）：堆够例子之后 NCC 反超（0.829 vs 0.558）
+ *   · YOLOE 是端到端训练过的检测器，对真实照片/复杂场景更稳
+ * 用户拿自己的图一比就知道该用哪条，所以两条都留在界面上。
  */
-const CONF_MODEL_KEY = 'yoloe-26n-visual-prompt';
-const DEFAULT_CONF = 0.25;
+export type VpEngine = 'yoloe' | 'dino';
+
+export interface VpEngineInfo {
+  id: VpEngine;
+  name: string;
+  /** 模型体积（MB），界面文案里如实告诉用户 */
+  mb: number;
+  /** 一句话说明这条链路是什么 */
+  tagline: string;
+}
+
+export const VP_ENGINES: readonly VpEngineInfo[] = [
+  {
+    id: 'yoloe',
+    name: 'YOLOE 视觉提示',
+    mb: 20,
+    tagline: '把例子交给内置检测模型，模型直接给出框',
+  },
+  {
+    id: 'dino',
+    name: 'DINOv2 特征匹配',
+    mb: 85,
+    tagline: '用语义特征做模板匹配，参考图少时更灵',
+  },
+];
+
+/** 内置模型路径。用 BASE_URL 拼接，保证部署到子目录时也能取到 */
+const MODEL_URLS: Record<VpEngine, string> = {
+  yoloe: `${import.meta.env.BASE_URL}models/yoloe26n-vp.onnx`,
+  dino: `${import.meta.env.BASE_URL}models/dinov2-small-518.onnx`,
+};
+/**
+ * 阈值的存储键，**按引擎分开**。
+ *
+ * 两个数字的含义根本不同：YOLOE 是模型输出的置信度（0~1），
+ * DINOv2 是「高于本图均值几个标准差」（z，约 1.0~3.5）。混用一个键会让
+ * 切引擎时阈值被对方的量纲覆盖，表现为「换条链路就找不到东西了」。
+ *
+ * 复用 modelStore 的「跟着模型记」机制 —— 换回来时阈值还在。
+ */
+const CONF_KEYS: Record<VpEngine, string> = {
+  yoloe: 'yoloe-26n-visual-prompt',
+  dino: 'dinov2-small-visual-prompt',
+};
+const DEFAULT_CONF: Record<VpEngine, number> = {
+  yoloe: 0.25,
+  dino: DINO_Z_DEFAULT,
+};
+
+export function modelMbOf(engine: VpEngine): number {
+  return VP_ENGINES.find((e) => e.id === engine)?.mb ?? 0;
+}
 
 export type VpStatus = 'idle' | 'loading' | 'ready' | 'error';
 export type VpBusy = 'none' | 'prompt' | 'current' | 'batch';
 
 interface VpState {
+  /** 当前用哪条引擎 */
+  engine: VpEngine;
   status: VpStatus;
   error: string;
   /** 下载进度 0~100；-1 表示拿不到总长度 */
@@ -56,6 +113,7 @@ interface VpState {
   promptRefs: number;
   promptBoxes: number;
 
+  /** 当前引擎的阈值。YOLOE 是置信度（0~1）；DINOv2 是 z 值（1.0~3.5），两者不可比 */
   conf: number;
   busy: VpBusy;
   batchDone: number;
@@ -63,6 +121,8 @@ interface VpState {
   /** 试标结果落在哪张图（界面据此提示「去那张图看看」） */
   trialImageId: string | null;
 
+  /** 切换引擎：清掉已编码的提示，阈值按引擎各自恢复 */
+  setEngine: (e: VpEngine) => void;
   /** 按需下载 + 加载内置模型。返回是否可用 */
   ensureReady: () => Promise<boolean>;
   /** 打开面板时调用：没选过参考图就默认选「当前这张」（有框的话） */
@@ -79,15 +139,21 @@ interface VpState {
   cancelBatch: () => void;
 }
 
-const vpDetector = new VisualPromptDetector();
+/** 两个引擎各一个实例：会话互不影响，切回来时不必重新下载 */
+const yoloeDetector = new VisualPromptDetector();
+const dinoDetector = new DinoPromptDetector();
 let batchCancelled = false;
 
 /**
- * 提示向量放模块变量而不是 store：
- * 它是 512 个 float 的裸数组，塞进 state 只会让每次 set 都多一次无意义的引用比较，
+ * 提示放模块变量而不是 store：
+ * 它是几百个 float 的裸数组，塞进 state 只会让每次 set 都多一次无意义的引用比较，
  * 而界面需要的只是「有没有就绪」这个布尔量（`promptReady`）。
+ *
+ * 用带 tag 的联合类型而不是 `any`：检测时分派要能看出用的是哪条链路，
+ * 写错引擎（拿 512 维向量去喂 DINOv2）必须在编译期就报错。
  */
-let prompt: Float32Array | null = null;
+type VpPrompt = { engine: 'yoloe'; vec: Float32Array } | { engine: 'dino'; proto: DinoProto };
+let prompt: VpPrompt | null = null;
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -109,6 +175,13 @@ function toCandidates(dets: readonly VpDetection[], className: string): AiCandid
   }));
 }
 
+/** 按提示自带的 engine tag 分派到对应检测器（类型收窄由联合类型保证） */
+function detectWith(p: VpPrompt, bmp: ImageBitmap, conf: number): Promise<VpDetection[]> {
+  return p.engine === 'dino'
+    ? dinoDetector.detect(bmp, p.proto, conf)
+    : yoloeDetector.detect(bmp, p.vec, conf);
+}
+
 /** 清掉已编码的提示（参考图或类别一变，旧提示就失效了） */
 function clearPrompt(set: (p: Partial<VpState>) => void): void {
   prompt = null;
@@ -116,6 +189,7 @@ function clearPrompt(set: (p: Partial<VpState>) => void): void {
 }
 
 export const useVpStore = create<VpState>((set, get) => ({
+  engine: 'yoloe',
   status: 'idle',
   error: '',
   progress: 0,
@@ -129,31 +203,56 @@ export const useVpStore = create<VpState>((set, get) => ({
   promptRefs: 0,
   promptBoxes: 0,
 
-  conf: loadConf(CONF_MODEL_KEY) ?? DEFAULT_CONF,
+  conf: loadConf(CONF_KEYS.yoloe) ?? DEFAULT_CONF.yoloe,
   busy: 'none',
   batchDone: 0,
   batchTotal: 0,
   trialImageId: null,
+
+  setEngine: (e) => {
+    if (get().engine === e) return;
+    // 换引擎等于换了一整套「提示」，旧的必须作废
+    clearPrompt(set);
+    const det = e === 'dino' ? dinoDetector : yoloeDetector;
+    set({
+      engine: e,
+      conf: loadConf(CONF_KEYS[e]) ?? DEFAULT_CONF[e],
+      error: '',
+      progress: 0,
+      // 该引擎的会话若还活着就直接标 ready —— 切回来不必重新下载那 85MB
+      status: det.ready ? 'ready' : 'idle',
+      ep: det.ready ? det.ep : '',
+      warmupError: det.ready ? det.warmupError : '',
+    });
+  },
 
   ensureReady: async () => {
     const st = get();
     if (st.status === 'ready') return true;
     // 正在下载时再点一次不应该重复发起 —— 静默返回，不弹错
     if (st.status === 'loading') return false;
+    const eng = st.engine;
+    const det = eng === 'dino' ? dinoDetector : yoloeDetector;
+    if (det.ready) {
+      set({ status: 'ready', progress: 100, ep: det.ep, warmupError: det.warmupError });
+      return true;
+    }
     set({ status: 'loading', error: '', progress: 0, warmupError: '' });
     try {
-      await vpDetector.boot();
-      const bytes = await fetchWithProgress(MODEL_URL, (pct) => set({ progress: pct }));
-      await vpDetector.loadModel(new Uint8Array(bytes));
+      await det.boot();
+      const bytes = await fetchWithProgress(MODEL_URLS[eng], (pct) => set({ progress: pct }));
+      await det.loadModel(new Uint8Array(bytes));
+      // 下载期间用户可能已经切走引擎了，这时不该把状态盖回当前引擎
+      if (get().engine !== eng) return det.ready;
       set({
         status: 'ready',
         progress: 100,
-        ep: vpDetector.ep,
-        warmupError: vpDetector.warmupError,
+        ep: det.ep,
+        warmupError: det.warmupError,
       });
       return true;
     } catch (e) {
-      set({ status: 'error', error: messageOf(e), progress: 0 });
+      if (get().engine === eng) set({ status: 'error', error: messageOf(e), progress: 0 });
       return false;
     }
   },
@@ -193,11 +292,12 @@ export const useVpStore = create<VpState>((set, get) => ({
 
   setConf: (v) => {
     set({ conf: v });
-    saveConf(CONF_MODEL_KEY, v);
+    saveConf(CONF_KEYS[get().engine], v);
   },
 
   buildPrompt: async () => {
     if (get().busy !== 'none') return;
+    const eng = get().engine;
     if (!(await get().ensureReady())) {
       toast.error(`模型没准备好：${get().error || '请检查网络后重试'}`);
       return;
@@ -227,17 +327,32 @@ export const useVpStore = create<VpState>((set, get) => ({
 
     set({ busy: 'prompt' });
     try {
-      const vectors: Float32Array[] = [];
       let totalBoxes = 0;
-      for (const { img, boxes } of usable) {
-        const bmp = await loadBitmap(img);
-        if (!bmp) continue;
-        vectors.push(await vpDetector.encodePrompt(bmp, boxes));
-        totalBoxes += boxes.length;
+      let used = 0;
+      if (eng === 'dino') {
+        const protos: DinoProto[] = [];
+        for (const { img, boxes } of usable) {
+          const bmp = await loadBitmap(img);
+          if (!bmp) continue;
+          protos.push(await dinoDetector.encodePrompt(bmp, boxes));
+          totalBoxes += boxes.length;
+        }
+        if (protos.length === 0) throw new Error('参考图都打不开，无法编码');
+        prompt = { engine: 'dino', proto: mergeProtos(protos) };
+        used = protos.length;
+      } else {
+        const vectors: Float32Array[] = [];
+        for (const { img, boxes } of usable) {
+          const bmp = await loadBitmap(img);
+          if (!bmp) continue;
+          vectors.push(await yoloeDetector.encodePrompt(bmp, boxes));
+          totalBoxes += boxes.length;
+        }
+        if (vectors.length === 0) throw new Error('参考图都打不开，无法编码');
+        prompt = { engine: 'yoloe', vec: mergePrompts(vectors) };
+        used = vectors.length;
       }
-      if (vectors.length === 0) throw new Error('参考图都打不开，无法编码');
-      prompt = mergePrompts(vectors);
-      set({ promptReady: true, promptRefs: vectors.length, promptBoxes: totalBoxes });
+      set({ promptReady: true, promptRefs: used, promptBoxes: totalBoxes });
       const skipped = refs.length - usable.length;
       if (skipped > 0) {
         toast.info(`有 ${skipped} 张参考图上没有这个类别的框，已跳过`);
@@ -281,7 +396,7 @@ export const useVpStore = create<VpState>((set, get) => ({
       const img = images[idx];
       const bmp = await loadBitmap(img);
       if (!bmp) throw new Error('这张图打不开');
-      const dets = await vpDetector.detect(bmp, prompt!, get().conf);
+      const dets = await detectWith(prompt!, bmp, get().conf);
       // 交给 aiStore：画布与「全部采纳 / 放弃」状态条只认这一处
       useAiStore.getState().setCandidates(toCandidates(dets, labelName), img.id);
       cur.setActiveIndex(idx);
@@ -344,7 +459,7 @@ export const useVpStore = create<VpState>((set, get) => ({
         continue;
       }
       try {
-        const dets = await vpDetector.detect(bmp, prompt!, get().conf);
+        const dets = await detectWith(prompt!, bmp, get().conf);
         if (dets.length > 0) {
           const res = useStore
             .getState()

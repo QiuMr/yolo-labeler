@@ -192,7 +192,7 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
               照样子找 · 不用任何文件
             </span>
             <span className="mt-0.5 block text-micro leading-relaxed text-ink-3">
-              标好几张图之后，让工具照着样子把剩下的找出来（内置模型，不用训练）
+              标好几张图之后，让工具照着样子把剩下的找出来 · 内置两种引擎，不用训练
             </span>
           </span>
           <ChevronRight className="size-4 flex-shrink-0 text-ink-4" />
