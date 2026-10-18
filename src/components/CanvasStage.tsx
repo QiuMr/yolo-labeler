@@ -21,6 +21,7 @@ import {
   Loader2,
   Maximize,
   MousePointerClick,
+  RotateCcw,
   Sparkles,
   TriangleAlert,
   ZoomIn,
@@ -85,6 +86,21 @@ type HitResult =
   | { kind: 'handle'; id: string; handle: HandleId }
   | { kind: 'move'; id: string; under: string[] }
   | null;
+
+/** 一次按下/抬起在 AI 候选框上的暂存：抬起时若没移动就单独剔除这个候选框 */
+type CandidateTap = { index: number; sx: number; sy: number; moved: boolean };
+
+/** 命中哪个 AI 候选框（后画的在上面，所以从后往前找）。没命中返回 -1 */
+function hitCandidateIndex(
+  p: IPoint,
+  cands: readonly { rect: IRect }[],
+): number {
+  for (let i = cands.length - 1; i >= 0; i -= 1) {
+    const r = cands[i].rect;
+    if (p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height) return i;
+  }
+  return -1;
+}
 
 /**
  * 「点击标注」按钮里显示什么。
@@ -212,6 +228,18 @@ export function CanvasStage() {
   const segActive = useSegStore((s) => s.active);
   const segBusy = useSegStore((s) => s.busy);
   const segEncoded = useSegStore((s) => s.encoded);
+  const segPoints = useSegStore((s) => s.points);
+  const segResetPoints = useSegStore((s) => s.resetPoints);
+  /**
+   * 点击标注的点位与 AI 候选框的「单击剔除」暂存。
+   *
+   * 点位必须走 ref 交给渲染循环：它是画在 canvas 上的（静态层缓存），
+   * 而平移时视图变化刻意不触发 React 渲染 —— 用绝对定位的 DOM 覆盖层画点的话，
+   * 一平移标记就会和图片脱开。
+   */
+  const segPointsRef = useRef<readonly { x: number; y: number; positive: boolean }[]>([]);
+  const candTapRef = useRef<CandidateTap | null>(null);
+  const aiRemoveCandidate = useAiStore((s) => s.removeCandidate);
   useEffect(() => {
     segActiveRef.current = segActive;
     // 退出模式时清掉半途的暂存，避免残留状态影响下一次进入
@@ -263,6 +291,7 @@ export function CanvasStage() {
       draftRect: draftRef.current?.rect ?? null,
       pendingRect: pendingRef.current,
       aiCandidates: aiCandidatesRef.current,
+      segPoints: segPointsRef.current,
       hiddenLabelIds: hiddenRef.current,
       cursor: cursorRef.current,
       showCrosshair: interactionRef.current === null,
@@ -285,6 +314,7 @@ export function CanvasStage() {
     hoverRef.current = hoverId;
     labelMapRef.current = labelMap;
     aiCandidatesRef.current = aiCandidates;
+    segPointsRef.current = segPoints;
     // 选中框对象的缓存：hitTest 每次 mousemove 都要靠它判定缩放手柄命中，
     // 缓存下来就不必每次再 annotations.find()（那又是一遍 O(n) 全图扫描）。
     selectedAnnRef.current =
@@ -340,6 +370,11 @@ export function CanvasStage() {
   useEffect(() => {
     markDirty();
   }, [aiCandidates, markDirty]);
+
+  // 点击标注的点位变了也要刷一次（点在静态层里，不刷的话新点要等下一次重绘才出现）
+  useEffect(() => {
+    markDirty();
+  }, [segPoints, markDirty]);
 
   // 只有缩放比例变化才通知 React，纯平移不产生任何重渲染
   const publishView = useCallback(() => {
@@ -681,6 +716,19 @@ export function CanvasStage() {
 
       setMenu(null);
 
+      // ---- AI 候选框：点一下就能单独去掉它 ----
+      // 以前只有「全部采纳 / 忽略」两条路，为一个错框得整批放弃、采纳完再手工删。
+      // 只记下按下点，抬起且没移动才真剔除 —— 从候选框上按下再拖出去看别处，
+      // 不该被当成「我要删掉它」。
+      const cands = aiCandidatesRef.current;
+      if (cands && cands.length > 0 && !segActiveRef.current && e.button === 0 && !spaceRef.current && !e.altKey) {
+        const idx = hitCandidateIndex(ip, cands);
+        if (idx >= 0) {
+          candTapRef.current = { index: idx, sx: p.x, sy: p.y, moved: false };
+          return;
+        }
+      }
+
       // ---- 点击标注模式：左键 =「要这个物体」，右键 =「排除这块」----
       // 放在平移判断之前，但把「空格 / 中键 / Alt」让出去 ——
       // 取点过程中还得能移动画布去看图片别的区域，否则大图上没法用。
@@ -843,11 +891,25 @@ export function CanvasStage() {
           return;
         }
 
+        const candTap = candTapRef.current;
+        if (candTap) {
+          if (!candTap.moved && Math.hypot(p.x - candTap.sx, p.y - candTap.sy) > CLICK_SLOP_PX) {
+            candTap.moved = true;
+          }
+          const canvas = canvasRef.current;
+          if (canvas && canvas.style.cursor !== 'pointer') canvas.style.cursor = 'pointer';
+          return;
+        }
+
         const canvas = canvasRef.current;
         if (canvas) {
           const hit = hitTest(toImage(p));
+          const cands = aiCandidatesRef.current;
           let cursor = 'crosshair';
           if (spaceRef.current) cursor = 'grab';
+          // 候选框压在已有框上时优先给「可点掉」的手型：此刻用户能操作的确实是那个候选框
+          else if (cands && cands.length > 0 && hitCandidateIndex(toImage(p), cands) >= 0)
+            cursor = 'pointer';
           else if (hit?.kind === 'handle') cursor = HANDLE_CURSOR[hit.handle];
           else if (hit?.kind === 'move') cursor = 'move';
           if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
@@ -950,6 +1012,14 @@ export function CanvasStage() {
         return;
       }
 
+      // ---- AI 候选框：原地点击 = 剔掉这一个 ----
+      const candTap = candTapRef.current;
+      if (candTap) {
+        candTapRef.current = null;
+        if (!candTap.moved) aiRemoveCandidate(candTap.index);
+        return;
+      }
+
       const it = interactionRef.current;
       interactionRef.current = null;
       if (!it) return;
@@ -1007,7 +1077,7 @@ export function CanvasStage() {
         markDirty();
       }
     },
-    [addBox, hitTest, markDirty, openMenuAtPoint, select, toImage, updateBox],
+    [addBox, aiRemoveCandidate, hitTest, markDirty, openMenuAtPoint, select, toImage, updateBox],
   );
 
   const onPointerLeave = useCallback(() => {
@@ -1145,6 +1215,11 @@ export function CanvasStage() {
           <span className="whitespace-nowrap text-caption font-bold text-white/92">
             AI 找到 <span className="num">{aiCandidates.length}</span> 个目标
           </span>
+          {/* 把「可以只去掉一个」说出来：不说的话用户只会看到全部采纳/忽略两个选项，
+              于是为了一个错框而整批放弃。窄屏藏起来，别把这条挤出画布 */}
+          <span className="hidden whitespace-nowrap text-micro text-white/45 md:inline">
+            点框可去掉不要的
+          </span>
           <button
             type="button"
             onClick={aiAcceptAll}
@@ -1183,11 +1258,30 @@ export function CanvasStage() {
             <>
               <MousePointerClick className="size-[14px] flex-shrink-0 text-sky-300" />
               <span className="whitespace-nowrap text-caption font-semibold text-white/85">
-                {segEncoded ? '点一下物体，自动出框' : '正在准备…'}
+                {!segEncoded
+                  ? '正在准备…'
+                  : segPoints.length > 0
+                    ? `已点 ${segPoints.length} 个点`
+                    : '点一下物体，自动出框'}
               </span>
               <span className="whitespace-nowrap text-micro text-white/45">
-                点在框上可直接调整它 · 按住 Shift 点可叠加新框 · 右键排除 · Esc 退出
+                {segPoints.length > 0
+                  ? '再点一下可修正 · 右键点掉多余区域'
+                  : '点在框上可直接调整它 · 按住 Shift 点可叠加新框 · 右键排除 · Esc 退出'}
               </span>
+              {/* 点歪了要有退路：以前只能 Esc 退出再进一次（点本身还看不见）。
+                  现在点上看得见，也一键扔掉重来。 */}
+              {segPoints.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={segResetPoints}
+                  title="放弃这些点，重新开始"
+                  className="flex flex-shrink-0 items-center gap-1 rounded-full bg-white/12 px-2 py-[3px] text-micro font-semibold text-white/85 transition-colors hover:bg-white/20"
+                >
+                  <RotateCcw className="size-3" />
+                  清空重来
+                </button>
+              ) : null}
             </>
           )}
         </div>

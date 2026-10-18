@@ -18,6 +18,12 @@ export interface RenderState {
   pendingRect: IRect | null;
   /** AI 候选框（尚未采纳）：虚线样式，和已有标注明显区分 */
   aiCandidates: Array<{ rect: IRect; score: number; className: string }> | null;
+  /**
+   * 「点击标注」累积的点击点（原图坐标）。
+   * 正点 = 要这个物体，负点 = 排除这块。不画出来的话，用户没法知道
+   * 「已经点了几个、点在哪、哪些是排除的」，而修正全靠再点一下。
+   */
+  segPoints: readonly { x: number; y: number; positive: boolean }[] | null;
   /** 被用户隐藏的类别：这些框不画（导出与数据不受影响） */
   hiddenLabelIds: ReadonlySet<string>;
   cursor: IPoint | null;
@@ -34,6 +40,10 @@ const HANDLE_RADIUS = 4.5;
 const UNCLASSIFIED_COLOR = '#9aa2b1';
 /** AI 候选框：青色虚线，与用户已采纳的标签框一眼可分 */
 const AI_COLOR = '#38bdf8';
+/** 点击标注的正点（要这块）/ 负点（排除这块）。绿=保留、红=排除是分割工具的通行约定 */
+const SEG_POS_COLOR = '#34d399';
+const SEG_NEG_COLOR = '#fb7185';
+const SEG_POINT_RADIUS = 6;
 const CHIP_HEIGHT = 19;
 const CHIP_RADIUS = 6;
 const CHIP_MIN_BOX_W = 26;
@@ -202,7 +212,7 @@ export class Renderer {
    *
    * 这里全部用**引用比较**（`===`），不做深比较 —— 参与绘制的这些值在「没变」时
    * 引用本身就不变（annotations / labels 数组、view 对象、draftRect 对象都是被整体替换的），
-   * 所以一次命中判定是 16 次指针比较，而它省掉的是「重画 N 个框」这件线性开销的事。
+   * 所以一次命中判定是 17 次指针比较，而它省掉的是「重画 N 个框」这件线性开销的事。
    *
    * 反向要求同样重要：任何会影响静态画面的输入都必须列进来。
    * 漏一个就会出现「画面不更新」——那比慢更难排查。
@@ -226,7 +236,8 @@ export class Renderer {
       k[12] === s.view &&
       k[13] === s.width &&
       k[14] === s.height &&
-      k[15] === s.showHandles
+      k[15] === s.showHandles &&
+      k[16] === s.segPoints
     );
   }
 
@@ -264,6 +275,7 @@ export class Renderer {
       state.width,
       state.height,
       state.showHandles,
+      state.segPoints,
     ];
   }
 
@@ -337,6 +349,59 @@ export class Renderer {
     // 4. 正在画的新框
     if (state.pendingRect) {
       this.drawPending(state, state.pendingRect);
+    }
+
+    // 5. 点击标注累积的点（画在最上层，保证任何情况下都看得见）
+    if (state.segPoints && state.segPoints.length > 0) {
+      this.drawSegPoints(state, state.segPoints);
+    }
+  }
+
+  /**
+   * 点击标注的点位标记。
+   *
+   * 正点：实心绿圆 + 白圈；负点：深色圆 + 红圈 + 红叉。
+   * 颜色之外再加**形状**区分（叉号），是因为红绿是色觉障碍最常见的混淆对 ——
+   * 只靠颜色区分等于对这部分用户没区分。
+   * 每个点都先垫一圈半透明深色，保证在白墙、雪地这类浅背景上也看得清。
+   */
+  private drawSegPoints(
+    state: RenderState,
+    points: readonly { x: number; y: number; positive: boolean }[],
+  ): void {
+    const { ctx } = this;
+    const v = state.view;
+    const r = SEG_POINT_RADIUS;
+    for (const p of points) {
+      const cx = v.ox + p.x * v.scale;
+      const cy = v.oy + p.y * v.scale;
+      if (cx < -20 || cy < -20 || cx > state.width + 20 || cy > state.height + 20) continue;
+
+      // 深色垫圈：浅色背景上的唯一保障
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = p.positive ? SEG_POS_COLOR : 'rgba(12,15,22,0.92)';
+      ctx.fill();
+      ctx.strokeStyle = p.positive ? '#ffffff' : SEG_NEG_COLOR;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      if (!p.positive) {
+        const s = r * 0.52;
+        ctx.beginPath();
+        ctx.moveTo(cx - s, cy - s);
+        ctx.lineTo(cx + s, cy + s);
+        ctx.moveTo(cx + s, cy - s);
+        ctx.lineTo(cx - s, cy + s);
+        ctx.strokeStyle = SEG_NEG_COLOR;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
     }
   }
 

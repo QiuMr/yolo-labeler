@@ -6,6 +6,7 @@
 import { readOnnxInputDims, readOnnxMetadata, parseImgszHint } from '../.tmp/ai/onnxShape.js';
 import { parseClassNames, classNameFor } from '../.tmp/ai/cocoNames.js';
 import { snapRectToEdges } from '../.tmp/utils/geometry.js';
+import { buildAiAnnotations, iouOf, AI_DEDUP_IOU } from '../.tmp/utils/aiBoxes.js';
 import { parseImageSize } from '../.tmp/utils/imageSize.js';
 import {
   parseClassesTxt,
@@ -429,6 +430,100 @@ check(
   '贴左边界的小框保留 1px',
   snapRectToEdges({ x: 3, y: 100, width: 8, height: 40 }, 1920, 1080, TOL).width,
   1,
+);
+
+/* ---------- AI 落框：重复框治理 ----------
+   这条规则直接影响导出数据集的正确性：
+   「调低阈值再跑一遍」必然在同一张图上产出与已有框几乎重合的新框，
+   不拦的话每个物体挂两个框（是两份真值，而不是"多一个框要删"这么轻）。 */
+console.log('\nAI 落框与去重：');
+const rect = (x, y, w, h) => ({ x, y, width: w, height: h });
+const CAT = { id: 'lb_cat', name: 'cat', color: '#000000' };
+/** 跑一次落框。labels 可预置，用来构造「已有同类框」的场景 */
+const runAi = (existing, entries, preset = [], w = 100, h = 100) => {
+  const labels = preset.slice();
+  const nameToId = new Map(labels.map((l) => [l.name, l.id]));
+  const res = buildAiAnnotations({
+    existing,
+    entries,
+    labels,
+    nameToId,
+    width: w,
+    height: h,
+    createLabel: (name, index) => ({ id: `lb_new${index}`, name, color: '#111111' }),
+    createId: (prefix) => `${prefix}fixed`,
+  });
+  return { ...res, labels, nameToId };
+};
+
+check('IoU：完全重合 = 1', iouOf(rect(0, 0, 10, 10), rect(0, 0, 10, 10)), 1);
+check('IoU：不相交 = 0', iouOf(rect(0, 0, 10, 10), rect(20, 20, 10, 10)), 0);
+check('IoU：仅边界相接 = 0', iouOf(rect(0, 0, 10, 10), rect(10, 0, 10, 10)), 0);
+check('IoU：三分之一重叠', Math.round(iouOf(rect(0, 0, 10, 10), rect(5, 0, 10, 10)) * 1e6) / 1e6, 0.333333);
+
+const r1 = runAi(
+  [],
+  [
+    { rect: rect(0, 0, 10, 10), className: 'cat', score: 0.9 },
+    { rect: rect(40, 40, 10, 10), className: 'cat', score: 0.8 },
+  ],
+  [CAT],
+);
+check('两个同类框都落下', r1.anns.length, 2);
+check('同类名不重复建标签', r1.labels.length, 1);
+check('标注带来源 ai', r1.anns[0].source, 'ai');
+check('标注带置信度', r1.anns[0].score, 0.9);
+check(
+  '置信度缺失时不编造',
+  runAi([], [{ rect: rect(0, 0, 10, 10), className: 'cat' }], [CAT]).anns[0].score ?? 'none',
+  'none',
+);
+
+// 与已有框同类别且高度重叠 → 跳过（Iou 恰好等于阈值也拦）
+const dup60 = runAi(
+  [{ id: 'a1', labelId: 'lb_cat', rect: rect(0, 0, 10, 10) }],
+  [{ rect: rect(2.5, 0, 10, 10), className: 'cat' }],
+  [CAT],
+);
+check(`IoU 恰为 ${AI_DEDUP_IOU} → 跳过`, [dup60.anns.length, dup60.skipped], [0, 1]);
+const nearDup = runAi(
+  [{ id: 'a1', labelId: 'lb_cat', rect: rect(0, 0, 10, 10) }],
+  [{ rect: rect(7, 0, 10, 10), className: 'cat' }],
+  [CAT],
+);
+check('IoU 低于阈值 → 保留', [nearDup.anns.length, nearDup.skipped], [1, 0]);
+// 不同类别高度重叠是正常情况（人骑在车上），绝不能被当成重复
+const crossClass = runAi(
+  [{ id: 'a1', labelId: 'lb_cat', rect: rect(0, 0, 10, 10) }],
+  [{ rect: rect(0, 0, 10, 10), className: 'dog' }],
+  [CAT],
+);
+check('不同类别重合 → 不跳过', [crossClass.anns.length, crossClass.skipped], [1, 0]);
+
+// 同一批里重复（模型给了两个几乎一样的框）也要拦
+const inBatch = runAi(
+  [],
+  [
+    { rect: rect(0, 0, 10, 10), className: 'cat' },
+    { rect: rect(0, 0, 10, 10), className: 'cat' },
+  ],
+  [CAT],
+);
+check('同批内重复 → 只留一个', [inBatch.anns.length, inBatch.skipped], [1, 1]);
+
+check(
+  '退化框（<2px）直接丢弃',
+  runAi([], [{ rect: rect(0, 0, 1, 40), className: 'cat' }], [CAT]).anns.length,
+  0,
+);
+check(
+  '超出图片的框被夹回图内',
+  (() => {
+    const r = runAi([], [{ rect: rect(95, 95, 20, 20), className: 'cat' }], [CAT], 100, 100)
+      .anns[0].rect;
+    return r.x + r.width <= 100 && r.y + r.height <= 100 ? 'in' : 'out';
+  })(),
+  'in',
 );
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);

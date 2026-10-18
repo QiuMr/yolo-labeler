@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CheckSquare, CirclePlus, Copy, Eye, EyeOff, Layers, ListChecks, MousePointerClick, Plus, Tag, Trash2 } from 'lucide-react';
+import { ArrowUpDown, CheckSquare, CirclePlus, Copy, Eye, EyeOff, Layers, ListChecks, MousePointerClick, Plus, Tag, Trash2 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { toast } from '../store/toastStore';
 import { PALETTE, readableInk } from '../utils/color';
@@ -62,6 +62,12 @@ function SectionHeader({
 
 /** 非选中行传同一个空数组引用，避免每次渲染产生新数组导致 memo 失效 */
 const NO_OVERLAPS: string[] = [];
+
+/**
+ * 「低置信」的界限。AI 批量落框之后总有一小撮框需要人工看一眼，
+ * 而按置信度排序 + 只看低于这条线的，就是这件事唯一好用的入口。
+ */
+const LOW_CONF = 0.5;
 
 /**
  * 「本图标注」里的一行。单独 memo：
@@ -201,8 +207,24 @@ const AnnotationRow = memo(function AnnotationRow({
           </TooltipContent>
         </Tooltip>
 
-        <span className="num ml-auto flex-shrink-0 text-micro text-ink-4">
-          {Math.round(ann.rect.width)}×{Math.round(ann.rect.height)}
+        {/* 置信度 + 尺寸。
+            AI 批量标注后「哪几个框可疑」是靠置信度判断的，所以把它摆在行里随时能扫；
+            低于 LOW_CONF 的用琥珀色挑出来，一眼就能看出该复核谁。
+            手工画的框没有置信度，这里就不显示 —— 不编造一个 100% 出来。 */}
+        <span className="ml-auto flex flex-shrink-0 items-center gap-1.5">
+          {typeof ann.score === 'number' ? (
+            <span
+              title="模型给出的置信度"
+              className={`num rounded-[6px] px-1 py-[1px] text-micro font-bold ${
+                ann.score < LOW_CONF ? 'bg-amber-400/20 text-amber-600' : 'bg-muted text-ink-4'
+              }`}
+            >
+              {Math.round(ann.score * 100)}%
+            </span>
+          ) : null}
+          <span className="num text-micro text-ink-4">
+            {Math.round(ann.rect.width)}×{Math.round(ann.rect.height)}
+          </span>
         </span>
       </div>
 
@@ -274,6 +296,10 @@ export function RightPanel() {
   const image = images[activeIndex] ?? null;
 
   const [batchMode, setBatchMode] = useState(false);
+  /** 复核用：按置信度升序（可疑的在前） */
+  const [sortByScore, setSortByScore] = useState(false);
+  /** 复核用：只看低于阈值的框 */
+  const [lowOnly, setLowOnly] = useState(false);
 
   /**
    * 当前**选中框**的重叠组（含自己，按图层顺序排列），用于「切换重叠框」。
@@ -345,6 +371,39 @@ export function RightPanel() {
   const labelCounts = useLabelCounts();
 
   const labelMap = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
+
+  /**
+   * 本图有没有 AI 给的置信度。
+   * 没有（纯手工标注）就完全不显示复核控件 —— 给一个用不上的开关只是噪音。
+   */
+  const hasScores = useMemo(
+    () => (image?.annotations ?? []).some((a) => typeof a.score === 'number'),
+    [image],
+  );
+  const lowCount = useMemo(
+    () =>
+      (image?.annotations ?? []).filter((a) => typeof a.score === 'number' && a.score < LOW_CONF)
+        .length,
+    [image],
+  );
+
+  /**
+   * 列表要显示的行。
+   *
+   * `index` 必须是**原始序号**（在 annotations 里的位置）：画布芯片上印的编号就是它。
+   * 筛选 / 排序后若改用显示位次，右侧第 3 行会和画布上标着 3 的框不是同一个东西，
+   * 用户照着序号去画布上找框会彻底对不上 —— 这比不排序更糟。
+   */
+  const rows = useMemo(() => {
+    const anns = image?.annotations ?? [];
+    let list = anns.map((ann, index) => ({ ann, index }));
+    if (lowOnly) {
+      list = list.filter(({ ann }) => typeof ann.score === 'number' && ann.score < LOW_CONF);
+    }
+    // 升序：最可疑的排最前面，复核可以从上往下直接处理
+    if (sortByScore) list = list.slice().sort((a, b) => (a.ann.score ?? 1) - (b.ann.score ?? 1));
+    return list;
+  }, [image, lowOnly, sortByScore]);
 
   const commitNewLabel = () => {
     if (cancelNewRef.current) {
@@ -634,6 +693,39 @@ export function RightPanel() {
           </div>
         ) : null}
 
+        {/* 复核条：只有存在 AI 置信度时才出现。
+            批量标注给出一百个框之后，「哪个该看一眼」是唯一真正费神的问题，
+            而置信度就是回答它的依据 —— 所以排序与筛选直接摆在这儿。 */}
+        {image && hasScores ? (
+          <div className="flex items-center gap-1.5 px-3 pb-2">
+            <button
+              type="button"
+              onClick={() => setSortByScore((v) => !v)}
+              title="把置信度最低的框排在最前面，复核从上往下做"
+              className={`flex h-[26px] flex-1 items-center justify-center gap-1 rounded-[9px] text-micro font-semibold transition-colors duration-150 ${
+                sortByScore
+                  ? 'bg-primary/[0.1] text-primary'
+                  : 'text-ink-3 hover:bg-hover hover:text-ink'
+              }`}
+            >
+              <ArrowUpDown className="size-3" />
+              按置信度排序
+            </button>
+            <button
+              type="button"
+              onClick={() => setLowOnly((v) => !v)}
+              title={`只看置信度低于 ${Math.round(LOW_CONF * 100)}% 的框`}
+              className={`flex h-[26px] flex-1 items-center justify-center gap-1 rounded-[9px] text-micro font-semibold transition-colors duration-150 ${
+                lowOnly
+                  ? 'bg-amber-400/20 text-amber-600'
+                  : 'text-ink-3 hover:bg-hover hover:text-ink'
+              }`}
+            >
+              只看低置信 · {lowCount}
+            </button>
+          </div>
+        ) : null}
+
         {/* 用原生滚动容器 + scroll-thin，与上方标签区的滚动条保持同一粗细
             （radix ScrollArea 的滚动条约 10px，和标签区的 7px 并排看很明显） */}
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
@@ -654,8 +746,28 @@ export function RightPanel() {
                   松手后点一下标签即完成
                 </p>
               </div>
+            ) : rows.length === 0 ? (
+              /* 筛选后为空：这是「筛出来的」，不是「本来没有」—— 说清楚并给一条退路，
+                 否则用户会以为框全丢了 */
+              <div className="mx-1 mt-5 flex flex-col items-center gap-2.5 rounded-[14px] border border-dashed border-line-strong bg-surface-inset/70 px-4 py-7 text-center">
+                <span className="flex size-[34px] items-center justify-center rounded-[14px] bg-[var(--surface-inset)] text-amber-500">
+                  <CheckSquare className="size-[17px]" />
+                </span>
+                <p className="text-caption leading-relaxed text-muted-foreground">
+                  没有低于 {Math.round(LOW_CONF * 100)}% 的框
+                  <br />
+                  这张图的 AI 结果都挺有把握
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setLowOnly(false)}
+                  className="text-micro font-semibold text-primary transition-colors hover:underline"
+                >
+                  看全部 {image?.annotations.length ?? 0} 个框
+                </button>
+              </div>
             ) : (
-              image.annotations.map((ann, index) => {
+              rows.map(({ ann, index }) => {
                 const label = ann.labelId ? labelMap.get(ann.labelId) : undefined;
                 const isSelected = batchMode
                   ? selectedBoxIds.includes(ann.id)

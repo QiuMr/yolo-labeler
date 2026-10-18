@@ -420,7 +420,9 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
             onValueChange={(v) => setConf((v[0] ?? 25) / 100)}
             disabled={working}
           />
-          <p className="mt-2 text-micro text-ink-4">调低能找出更多目标，调高则更精准</p>
+          <p className="mt-2 text-micro text-ink-4">
+            调低能找出更多目标，调高则更精准 · 这个值会跟着当前模型记住，下次不用重调
+          </p>
         </div>
 
         {/* ===== 动作 ===== */}
@@ -501,8 +503,8 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
             </Button>
             <p className="text-center text-micro text-ink-4">
               {batchScope === 'all'
-                ? '已有标注的图会「追加」新框，不会清掉旧框；Ctrl+Z 可整体撤销'
-                : '标注当前图会先给你过目再采纳；批量结果直接落框，都能 Ctrl+Z 撤销'}
+                ? '已有标注的图会补上新框；与已有框重复的会自动跳过 · Ctrl+Z 一次撤销整批'
+                : '标注当前图会先给你过目再采纳；批量结果直接落框 · Ctrl+Z 一次撤销整批'}
             </p>
           </div>
         )}

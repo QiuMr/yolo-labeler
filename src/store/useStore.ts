@@ -5,6 +5,7 @@ import { clampRectToImage } from '../utils/geometry';
 import { uid } from '../utils/id';
 import { naturalCompare } from '../utils/files';
 import { baseKey } from '../utils/yoloDataset';
+import { buildAiAnnotations, type AiBoxEntry } from '../utils/aiBoxes';
 import { decodeBitmap, dropImage, makeImageId, registerSource } from '../utils/imageCache';
 import { readImageSize } from '../utils/imageSize';
 import { isImageFile } from '../utils/media';
@@ -52,7 +53,29 @@ interface HistoryEntry {
    * restoreImage.index 对应的顺序已经被先恢复，图片能插回正确位置。
    */
   order?: string[];
+  /**
+   * 一次跨越**多张图**的操作（目前只有批量 AI 标注）。撤销时整批一起回退。
+   *
+   * 为什么必须有它：批量标注原来是「每张图各压一条历史」，200 张图 = 200 条，
+   * 而历史栈只有 100 条 —— 后果有两个，都是用户直接感受到的：
+   *   1. Ctrl+Z 一次只退一张图，而界面上写的是「可整体撤销」，属于骗人；
+   *   2. 超过 100 张的那一批，早期条目已被挤出栈，**永远撤不回来**。
+   */
+  batch?: Array<{ imageId: string; annotations: Annotation[] }>;
 }
+
+/**
+ * 批量 AI 标注进行中的历史暂存区。
+ * 非 null 表示「正在批量」：此时 applyAiBoxes 不再自己压历史，而是把每张图改动前的
+ * 标注记到这里，由 endAiBatch 合成**一条** batch 记录。
+ *
+ * 为什么中途也要落到图上（而不是攒到最后一次性写）：
+ * 用户可能中途点「停止」，那时已经处理完的图必须保留结果 ——
+ * 攒到最后再写的话，一停止全部白跑。
+ */
+let aiBatchSink: Array<{ imageId: string; annotations: Annotation[] }> | null = null;
+/** 批量开始前的标签表快照，用于让整批的撤销连新建的类别一起退回 */
+let aiBatchLabelsBefore: Label[] | null = null;
 
 
 
@@ -128,19 +151,34 @@ interface AppState {
   removeLabel: (id: string) => void;
   setActiveLabel: (id: string) => void;
 
-  /** 返回新框 id，便于画完后就地弹出标签选择器 */
-  addBox: (rect: IRect) => string | null;
+  /**
+   * 返回新框 id，便于画完后就地弹出标签选择器。
+   * `meta` 用于带上模型给出的置信度与来源（点击标注走这条），手工画框不传。
+   */
+  addBox: (rect: IRect, meta?: { score?: number; source?: 'ai' | 'manual' }) => string | null;
   updateBox: (annId: string, rect: IRect) => void;
   setBoxLabel: (annId: string, labelId: string) => void;
   deleteBox: (annId: string) => void;
   duplicateBox: (annId: string) => void;
-  /** AI 自动标注：按类别名批量落框，类别不存在时自动创建，整体只占一步撤销 */
+  /**
+   * AI 自动标注：按类别名批量落框，类别不存在时自动创建。
+   * 与已有框「同类且高度重叠」的会被跳过（重复框治理），返回新增数与跳过数。
+   * 单独调用时整体只占一步撤销；批量流程里请配合 beginAiBatch/endAiBatch 用。
+   */
   applyAiBoxes: (
     imageId: string,
-    entries: Array<{ rect: IRect; className: string }>,
+    entries: readonly AiBoxEntry[],
     imgW: number,
     imgH: number,
-  ) => void;
+  ) => { added: number; skipped: number };
+
+  /**
+   * 开始 / 结束一次「批量 AI 标注」。
+   * 期间的 applyAiBoxes 不各压一条历史，结束时合成一条 —— 这样 Ctrl+Z 能一次退掉整批，
+   * 而且不会因为超过历史栈上限（100 条）而永远撤不回来。
+   */
+  beginAiBatch: () => void;
+  endAiBatch: () => void;
 
   select: (id: string | null) => void;
   setHover: (id: string | null) => void;
@@ -199,6 +237,18 @@ export const useStore = create<AppState>((set, get) => {
 
   /** 反向记录：把「当前值」存进另一条栈，供重做使用 */
   function inverseOf(entry: HistoryEntry, state: AppState): HistoryEntry {
+    if (entry.batch) {
+      // 反向记录 = 这些图**此刻**的标注（重做时用来退回这一批的结果）
+      return {
+        imageId: null,
+        annotations: [],
+        labels: entry.labels ? state.labels : null,
+        batch: entry.batch.map((b) => {
+          const img = state.images.find((i) => i.id === b.imageId);
+          return { imageId: b.imageId, annotations: img ? img.annotations : [] };
+        }),
+      };
+    }
     const current = entry.imageId ? state.images.find((i) => i.id === entry.imageId) : undefined;
     const base: HistoryEntry = {
       imageId: entry.imageId,
@@ -268,7 +318,16 @@ export const useStore = create<AppState>((set, get) => {
     let images = state.images;
     let activeIndex = state.activeIndex;
 
-    if (entry.order) {
+    if (entry.batch) {
+      // 批量：一次回退多张图。**刻意不动 activeIndex** ——
+      // 整批跨很多张图，跳去其中任意一张都只会让人莫名其妙
+      // （单图那条分支会跳图是对的，因为那条只影响一张，跳过去正好看到变化）。
+      const byImage = new Map(entry.batch.map((b) => [b.imageId, b.annotations] as const));
+      images = images.map((i) => {
+        const anns = byImage.get(i.id);
+        return anns ? { ...i, annotations: anns } : i;
+      });
+    } else if (entry.order) {
       images = reorderById(state.images, entry.order);
       activeIndex = activeIndexFor(state, images);
     } else if (entry.removedImage && entry.imageId) {
@@ -285,8 +344,12 @@ export const useStore = create<AppState>((set, get) => {
     }
 
     const labels = entry.labels ?? state.labels;
-    const selectedId =
-      entry.imageId && entry.annotations.some((a) => a.id === state.selectedId) ? state.selectedId : null;
+    const selectedId = entry.batch
+      ? // 批量撤销不涉及「某一张图的选中框」，保持不动
+        state.selectedId
+      : entry.imageId && entry.annotations.some((a) => a.id === state.selectedId)
+        ? state.selectedId
+        : null;
     return {
       images,
       labels,
@@ -658,7 +721,7 @@ export const useStore = create<AppState>((set, get) => {
 
     setActiveLabel: (id) => set({ activeLabelId: id }),
 
-    addBox: (rect) => {
+    addBox: (rect, meta) => {
       const state = get();
       const index = state.activeIndex;
       const img = state.images[index];
@@ -669,7 +732,15 @@ export const useStore = create<AppState>((set, get) => {
       if (r.width < 2 || r.height < 2) return null;
 
       pushHistory(img.id);
-      const ann: Annotation = { id: uid('an_'), labelId, rect: r };
+      // score / source 只在真有值时写入：手工画的框不该带一个 undefined 的镜像字段，
+      // 导出的 JSON 与备份里也干净些
+      const ann: Annotation = {
+        id: uid('an_'),
+        labelId,
+        rect: r,
+        ...(meta?.score !== undefined ? { score: meta.score } : null),
+        ...(meta?.source !== undefined ? { source: meta.source } : null),
+      };
 
       set((s) => {
         const images = s.images.slice();
@@ -768,38 +839,36 @@ export const useStore = create<AppState>((set, get) => {
     applyAiBoxes: (imageId, entries, imgW, imgH) => {
       const state = get();
       const img = state.images.find((i) => i.id === imageId);
-      if (!img || entries.length === 0) return;
+      if (!img || entries.length === 0) return { added: 0, skipped: 0 };
       const W = imgW > 0 ? imgW : img.width;
       const H = imgH > 0 ? imgH : img.height;
-      if (W <= 0 || H <= 0) return;
+      if (W <= 0 || H <= 0) return { added: 0, skipped: 0 };
 
       const labels = state.labels.slice();
       const nameToId = new Map(labels.map((l) => [l.name, l.id] as const));
-      let colorIndex = labels.length;
-      const anns: Annotation[] = [];
-      for (const en of entries) {
-        let labelId = nameToId.get(en.className);
-        if (!labelId) {
-          const label = makeLabel(en.className, colorIndex);
-          colorIndex += 1;
-          labels.push(label);
-          nameToId.set(en.className, label.id);
-          labelId = label.id;
-        }
-        const rect = clampRectToImage(en.rect, W, H);
-        if (rect.width >= 2 && rect.height >= 2) {
-          anns.push({ id: uid('an_'), labelId, rect });
-        }
-      }
-      if (anns.length === 0) return;
+      const { anns, skipped } = buildAiAnnotations({
+        existing: img.annotations,
+        entries,
+        labels,
+        nameToId,
+        width: W,
+        height: H,
+        createLabel: makeLabel,
+        createId: uid,
+      });
+      if (anns.length === 0) return { added: 0, skipped };
 
       const labelsChanged = labels.length !== state.labels.length;
       // 新建过标签时把旧标签表一并存档，撤销时类别和框一起退回
-      pushEntry({
+      const entry: HistoryEntry = {
         imageId,
         annotations: img.annotations,
         labels: labelsChanged ? state.labels : null,
-      });
+      };
+      // 批量进行中：先记进暂存区，整批结束时合成一条历史（见 endAiBatch）
+      if (aiBatchSink) aiBatchSink.push({ imageId, annotations: img.annotations });
+      else pushEntry(entry);
+
       set((s) =>
         bumpLabelRevision({
           images: s.images.map((i) =>
@@ -810,6 +879,27 @@ export const useStore = create<AppState>((set, get) => {
           labels: labelsChanged ? labels : s.labels,
         }),
       );
+      return { added: anns.length, skipped };
+    },
+
+    beginAiBatch: () => {
+      aiBatchSink = [];
+      aiBatchLabelsBefore = get().labels;
+    },
+
+    endAiBatch: () => {
+      const touched = aiBatchSink;
+      const labelsBefore = aiBatchLabelsBefore;
+      aiBatchSink = null;
+      aiBatchLabelsBefore = null;
+      // 一张图都没改动（全是重复框 / 没识别到）→ 不占历史，Ctrl+Z 该退的是上一步真正的操作
+      if (!touched || touched.length === 0) return;
+      pushEntry({
+        imageId: null,
+        annotations: [],
+        labels: labelsBefore && labelsBefore.length !== get().labels.length ? labelsBefore : null,
+        batch: touched,
+      });
     },
 
     select: (id) => set({ selectedId: id }),

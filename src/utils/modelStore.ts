@@ -123,3 +123,41 @@ export function saveClassNames(modelName: string, names: string[]): void {
     /* 隐私模式 / 配额满：存不下不影响本次改名与标注 */
   }
 }
+
+/**
+ * 置信度阈值，同样跟着模型记住。
+ *
+ * 为什么必须记住：不同模型该用的阈值差得很远（自训的小数据集模型常常要压到 0.1~0.15
+ * 才找得全），而「调完阈值 → 刷新 / 关掉再打开 → 回 0.25」意味着**同一批图的标注结果
+ * 前后不一致**，用户看到的只是「AI 这次怎么又漏了」，无从归因。
+ */
+const CONF_KEY = 'yolo-labeler:conf-threshold';
+
+interface SavedConf {
+  model: string;
+  conf: number;
+}
+
+export function loadConf(modelName: string): number | null {
+  if (!modelName) return null;
+  try {
+    const raw = localStorage.getItem(CONF_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedConf>;
+    if (parsed?.model !== modelName || typeof parsed.conf !== 'number') return null;
+    // 越界值一律当没存过：阈值被写坏会让「一键标注」直接什么都不出框
+    if (!Number.isFinite(parsed.conf) || parsed.conf <= 0 || parsed.conf >= 1) return null;
+    return parsed.conf;
+  } catch {
+    return null;
+  }
+}
+
+export function saveConf(modelName: string, conf: number): void {
+  if (!modelName || !Number.isFinite(conf)) return;
+  try {
+    localStorage.setItem(CONF_KEY, JSON.stringify({ model: modelName, conf } satisfies SavedConf));
+  } catch {
+    /* 存不下不影响本次使用 */
+  }
+}

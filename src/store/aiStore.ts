@@ -3,9 +3,19 @@ import { Detector } from '../ai/detector';
 import { classNameFor } from '../ai/cocoNames';
 import type { IRect } from '../types';
 import { loadBitmap } from '../utils/imageCache';
-import { loadClassNames, loadSavedModel, saveClassNames, saveModel } from '../utils/modelStore';
+import {
+  loadClassNames,
+  loadConf,
+  loadSavedModel,
+  saveClassNames,
+  saveConf,
+  saveModel,
+} from '../utils/modelStore';
 import { useStore } from './useStore';
 import { toast } from './toastStore';
+
+/** 默认置信度阈值。模型没记过自己的值时的起点 */
+const DEFAULT_CONF = 0.25;
 
 /** AI 候选框（还没被采纳，画布上显示为虚线） */
 export interface AiCandidate {
@@ -64,6 +74,8 @@ interface AiState {
   setConf: (v: number) => void;
   /** 改某个类别的名字（空串 = 恢复默认名）；会同步刷新已生成的候选框 */
   setClassName: (index: number, name: string) => void;
+  /** 去掉一个候选框（在画布上点它）。不必为了一个错框把整批都放弃 */
+  removeCandidate: (index: number) => void;
   runCurrent: () => Promise<void>;
   /** 批量跑：empty=只跑还没有任何框的图；all=所有图都跑（已有框的图会追加） */
   runBatch: (scope?: 'empty' | 'all') => Promise<void>;
@@ -107,6 +119,8 @@ export const useAiStore = create<AiState>((set, get) => {
       modelTask: detector.modelTask,
       // 换模型了：上一份自定义类名不再对应，改成读**这个模型自己**那份（没有则为空）
       classNamesOverride: loadClassNames(name),
+      // 置信度阈值同理：不同模型该用的阈值差很多，跟着模型记住才不用每次重调
+      conf: loadConf(name) ?? DEFAULT_CONF,
       inputSizeFrom: detector.inputSizeFrom,
       layoutInfo: detector.layoutInfo,
       warmupError: detector.warmupError,
@@ -128,7 +142,7 @@ export const useAiStore = create<AiState>((set, get) => {
     inputSizeFrom: '',
     layoutInfo: '',
     warmupError: '',
-    conf: 0.25,
+    conf: DEFAULT_CONF,
     busy: 'none',
     batchDone: 0,
     batchTotal: 0,
@@ -170,7 +184,24 @@ export const useAiStore = create<AiState>((set, get) => {
       }
     },
 
-    setConf: (v) => set({ conf: v }),
+    setConf: (v) => {
+      set({ conf: v });
+      // 跟着模型记住：调一次就够，下次打开还是这个值。
+      // 不记的话「刷新后回 0.25」会让同一批图的标注结果前后不一致，用户很难自己反应过来。
+      const name = get().modelName;
+      if (name) saveConf(name, v);
+    },
+
+    removeCandidate: (index) => {
+      const { candidates, candidatesImageId } = get();
+      if (index < 0 || index >= candidates.length) return;
+      const next = candidates.filter((_, i) => i !== index);
+      set({
+        candidates: next,
+        // 去掉最后一个候选框后画布上就再没有待确认的东西了，状态条也该收起来
+        candidatesImageId: next.length > 0 ? candidatesImageId : null,
+      });
+    },
 
     setClassName: (index, name) => {
       const num = get().numClasses;
@@ -227,7 +258,7 @@ export const useAiStore = create<AiState>((set, get) => {
       const st = get();
       if (st.status !== 'ready' || st.busy !== 'none') return;
       const targets = useStore.getState().images.filter(
-        // 'all' 会连已有标注的图一起跑；对已有框的图是「追加」，不会清掉旧框
+        // 'all' 会连已有标注的图一起跑；对已有框的图是「补上缺的」，同类且高度重叠的会被跳过
         (i) => scope === 'all' || i.annotations.length === 0,
       );
       if (targets.length === 0) {
@@ -247,7 +278,10 @@ export const useAiStore = create<AiState>((set, get) => {
       let boxCount = 0;
       let touched = 0;
       let failed = 0;
+      let dupSkipped = 0;
       let i = 0;
+      // 整批合成一条撤销记录：Ctrl+Z 一次退掉整批，也不会因为张数超过历史栈上限而退不回来
+      useStore.getState().beginAiBatch();
       for (const img of targets) {
         if (batchCancelled) break;
         i += 1;
@@ -261,11 +295,13 @@ export const useAiStore = create<AiState>((set, get) => {
         try {
           const dets = await detector.detect(bmp, get().conf);
           if (dets.length > 0) {
-            useStore
+            const res = useStore
               .getState()
               .applyAiBoxes(img.id, toCandidates(dets, get().classNamesOverride), bmp.width, bmp.height);
-            boxCount += dets.length;
-            touched += 1;
+            boxCount += res.added;
+            dupSkipped += res.skipped;
+            // 只按「真的落下去几个」计数：整张图全是重复框时它并没有被改动
+            if (res.added > 0) touched += 1;
           }
         } catch {
           // 单张失败不打断整批，但必须记账，最后如实告知
@@ -279,6 +315,8 @@ export const useAiStore = create<AiState>((set, get) => {
         // 整个批次里浏览器一次都没 paint 过 —— 用户看到的是「点了之后界面冻住，结束后进度条直接跳到 100%」。
         if (i % 3 === 0) await new Promise((r) => setTimeout(r, 0));
       }
+      // 中途停止也要收口：已经落下的框必须留下，且合成同一条历史
+      useStore.getState().endAiBatch();
 
       set({
         busy: 'none',
@@ -286,15 +324,20 @@ export const useAiStore = create<AiState>((set, get) => {
         layoutInfo: detector.layoutInfo,
         inputSizeFrom: detector.inputSizeFrom,
       });
+      const dupSuffix = dupSkipped > 0 ? `，跳过 ${dupSkipped} 个与已有框重复的` : '';
       if (batchCancelled) {
-        toast.info(`已停止，共标注 ${touched} 张图`);
+        toast.info(`已停止，本次共标注 ${touched} 张图${dupSuffix}`);
       } else if (touched > 0) {
         const suffix = failed > 0 ? `，另有 ${failed} 张推理失败（多为图片损坏或内存不足）` : '';
-        toast.success(`一键标注完成：${touched} 张图、${boxCount} 个框（Ctrl+Z 可撤销）${suffix}`);
+        toast.success(
+          `一键标注完成：${touched} 张图、${boxCount} 个框${dupSuffix}（Ctrl+Z 一次撤销整批）${suffix}`,
+        );
+      } else if (dupSkipped > 0) {
+        toast.info(`这些图上找到的目标都已经有框了，又跳过 ${dupSkipped} 个重复的，没有新增`);
       } else if (failed > 0) {
         toast.warning(`${failed} 张图推理失败，没有成功标注任何一张（多为图片损坏或内存不足）`);
       } else {
-        toast.info('未标注的图片里没找到目标');
+        toast.info(scope === 'all' ? '这批图里没找到目标' : '未标注的图片里没找到目标');
       }
     },
 
@@ -322,9 +365,11 @@ export const useAiStore = create<AiState>((set, get) => {
         h = Math.ceil(h);
       }
       if (w <= 0 || h <= 0) return;
-      useStore.getState().applyAiBoxes(candidatesImageId, candidates, w, h);
+      const res = useStore.getState().applyAiBoxes(candidatesImageId, candidates, w, h);
       set({ candidates: [], candidatesImageId: null });
-      toast.success(`已添加 ${candidates.length} 个标注框`);
+      const dup = res.skipped > 0 ? `，跳过 ${res.skipped} 个重复的` : '';
+      if (res.added > 0) toast.success(`已添加 ${res.added} 个标注框${dup}`);
+      else if (res.skipped > 0) toast.info(`这些框都和已有的重复，没有新增${dup}`);
     },
 
     discardCandidates: () => {

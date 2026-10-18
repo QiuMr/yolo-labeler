@@ -36,11 +36,17 @@ interface SegState {
   /** 当前这张图是否已编码（true = 点击秒出） */
   encoded: boolean;
   ep: '' | 'WebGPU' | 'WASM';
-  /**
-   * 刚生成的框还没有类别时的 id —— 画布会消费它并弹「这是什么」菜单。
-   * 用一次性标志而不是让 store 直接操作画布 UI：store 不该知道菜单怎么弹。
-   */
+  /** 刚生成的框还没有类别时的 id —— 画布会消费它并弹「这是什么」菜单。
+   * 用一次性标志而不是让 store 直接操作画布 UI：store 不该知道菜单怎么弹。 */
   pendingLabelFor: string;
+  /**
+   * 当前累积的点击点（原图坐标）。
+   *
+   * 必须放进状态里：以前它只是本模块的一个私有变量，画布拿不到 ——
+   * 于是「点偏了」的时候用户**看不见自己点过哪、点了几个、哪个是正哪个是负**，
+   * 而代码却指望他「再点一下就能修正」。修正变成盲操作，等于没有。
+   */
+  points: readonly SegmentPoint[];
 
   /** 打开「点击标注」：按需下载模型 + 预编码当前图 */
   open: () => Promise<void>;
@@ -157,6 +163,7 @@ export const useSegStore = create<SegState>((set, get) => ({
   encoded: false,
   ep: '',
   pendingLabelFor: '',
+  points: [],
 
   open: async () => {
     const st = get();
@@ -183,7 +190,10 @@ export const useSegStore = create<SegState>((set, get) => ({
       }
     }
 
-    set({ active: true });
+    // 进入模式先把上一轮残留的点丢掉，否则新图上会突然冒出几个来自旧图的点
+    points = [];
+    pointsImageId = '';
+    set({ active: true, points: [] });
 
     // 进入模式就先把当前图编码好，用户点第一下时不用等编码
     const img = useStore.getState().images[useStore.getState().activeIndex];
@@ -204,12 +214,12 @@ export const useSegStore = create<SegState>((set, get) => ({
   close: () => {
     points = [];
     pointsImageId = '';
-    set({ active: false, busy: '', encoded: false });
+    set({ active: false, busy: '', encoded: false, points: [] });
   },
 
   resetPoints: () => {
     points = [];
-    set({ encoded: segmenter.hasEmbedding(pointsImageId) });
+    set({ encoded: segmenter.hasEmbedding(pointsImageId), points: [] });
   },
 
   clearPendingLabel: () => set({ pendingLabelFor: '' }),
@@ -228,7 +238,7 @@ export const useSegStore = create<SegState>((set, get) => ({
     if (pointsImageId !== img.id) {
       points = [];
       pointsImageId = img.id;
-      set({ encoded: segmenter.hasEmbedding(img.id) });
+      set({ encoded: segmenter.hasEmbedding(img.id), points: [] });
     }
 
     // 没编码过就先编码（首次点击会慢一次，之后都是秒出）
@@ -247,11 +257,16 @@ export const useSegStore = create<SegState>((set, get) => ({
     }
 
     const next = [...points, { x, y, positive }];
-    set({ busy: 'decode' });
+    // 立刻把点画到画布上（不等推理结果）：解码要 100~300ms，
+    // 不给即时反馈的话用户会以为这一下没点中，然后补点、越补越歪
+    set({ busy: 'decode', points: next });
     try {
       const res = await segmenter.segment(img.id, img.width, img.height, next);
-      // addBox 内部会 clamp 到图片范围、挡掉 <2px 的退化框，并压一条撤销历史
-      const id = useStore.getState().addBox(res.rect);
+      // addBox 内部会 clamp 到图片范围、挡掉 <2px 的退化框，并压一条撤销历史。
+      // 顺手把模型给的置信度与来源带上：这样点击标注产出的框也能进「低置信复核」那条流程
+      const id = useStore
+        .getState()
+        .addBox(res.rect, { score: res.score > 0 ? res.score : undefined, source: 'ai' });
       if (!id) {
         // 按 addBox 的既有契约，返回 null 说明框退化到不可用（多为点在边缘）
         toast.warning('生成的范围太小，换个位置点在物体内部');
@@ -260,6 +275,7 @@ export const useSegStore = create<SegState>((set, get) => ({
       }
       points = [];
       pointsImageId = img.id;
+      set({ points: [] });
 
       // 没有类别时**不静默留一个「未分类」框** —— 与画框流程保持一致，当场问它是什么。
       // （用户反馈的「点一下没有选类别」就出在这里：labels 为空时 addBox 给的是空 labelId）
@@ -274,8 +290,10 @@ export const useSegStore = create<SegState>((set, get) => ({
       const pct = Math.round((res.score || 0) * 100);
       toast.success(pct > 0 ? `已生成标注框（模型置信度 ${pct}%）` : '已生成标注框', 'seg-box');
     } catch (e) {
-      // 失败时**保留已累积的点**：用户再点一下就能修正（负点可排除多余区域）
+      // 失败时**保留已累积的点**：用户再点一下就能修正（负点可排除多余区域）。
+      // 点子留在画布上，「再点一下」才有意义 —— 看不见的话用户根本不知道该加在哪
       points = next;
+      set({ points: next });
       toast.error(messageOf(e));
     } finally {
       set({ busy: '' });
