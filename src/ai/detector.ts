@@ -311,8 +311,13 @@ export class Detector {
     }
     const ctx = this.ctx;
     if (!this.canvas || !ctx) throw new Error('当前浏览器不支持 Canvas 2D');
-    this.canvas.width = W;
-    this.canvas.height = H;
+    // 只在尺寸真的变了才改：给 canvas.width 赋**同一个值**同样会清空画布并重置上下文状态，
+    // 等于每次推理都白做一遍。尺寸没变时下面本来就会整幅 fillRect 覆盖，不需要它来清屏。
+    // 批量标注时尺寸恒为模型的输入尺寸，这一改动让每张图都少一次画布重置。
+    if (this.canvas.width !== W || this.canvas.height !== H) {
+      this.canvas.width = W;
+      this.canvas.height = H;
+    }
 
     const { padX, padY, scale } = this.letterbox(bitmap.width, bitmap.height);
     ctx.fillStyle = '#727272'; // RGB(114)，Ultralytics 标准补边色

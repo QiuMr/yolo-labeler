@@ -6,6 +6,7 @@
 import { readOnnxInputDims, readOnnxMetadata, parseImgszHint } from '../.tmp/ai/onnxShape.js';
 import { parseClassNames, classNameFor } from '../.tmp/ai/cocoNames.js';
 import { snapRectToEdges } from '../.tmp/utils/geometry.js';
+import { parseImageSize } from '../.tmp/utils/imageSize.js';
 import {
   parseClassesTxt,
   parseDataYamlNames,
@@ -272,6 +273,118 @@ const distinct = await parseYoloDataset([
 check('不同基名 → 正常匹配两个', distinct.anns.size, 2);
 check('classes.txt 被当类别表而非标注', distinct.classNames, ['cat', 'dog']);
 check('无歧义时 ambiguous 为空', distinct.ambiguous, []);
+
+/* ---------- 图片尺寸：从文件头直接读，不解码 ----------
+   缩略图降采样、以及「导出前补齐尺寸」都依赖它。读错尺寸是**静默错误**：
+   要么降采样目标算错，要么导出的归一化坐标用错宽高。
+   EXIF 方向那一条尤其关键 —— 它保证这里读到的尺寸和浏览器实际显示的尺寸一致。 */
+console.log('\n图片尺寸（文件头解析）：');
+
+const bytes = (...parts) => Uint8Array.from(parts.flat(Infinity));
+const str = (s) => [...s].map((c) => c.charCodeAt(0));
+const be16w = (n) => [(n >> 8) & 255, n & 255];
+const le16w = (n) => [n & 255, (n >> 8) & 255];
+const le24w = (n) => [n & 255, (n >> 8) & 255, (n >> 16) & 255];
+const le32w = (n) => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255];
+
+check(
+  'PNG 宽高（大端）',
+  parseImageSize(
+    bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], le32w(13), str('IHDR'), [
+      0, 0, 0x02, 0x80, 0, 0, 0x01, 0x90,
+    ]),
+  ),
+  { width: 640, height: 400 },
+);
+
+check(
+  'PNG 宽为 0 → null',
+  parseImageSize(
+    bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], le32w(13), str('IHDR'), [
+      0, 0, 0, 0, 0, 0, 0x01, 0x90,
+    ]),
+  ),
+  null,
+);
+
+check(
+  'GIF 宽高（小端）',
+  parseImageSize(bytes(str('GIF89a'), le16w(320), le16w(300))),
+  { width: 320, height: 300 },
+);
+
+// BMP：偏移 14 是 DIB 头大小；宽高是有符号 int32（高为负 = top-down）
+const bmpHead = [
+  ...str('BM'),
+  ...Array.from({ length: 12 }, () => 0),
+  ...le32w(40), // BITMAPINFOHEADER
+  ...le32w(1920),
+  ...le32w(1080),
+];
+check('BMP 宽高（有符号小端）', parseImageSize(bytes(bmpHead)), { width: 1920, height: 1080 });
+check(
+  'BMP 负高度取绝对值（top-down）',
+  parseImageSize(bytes([...bmpHead.slice(0, 22), ...le32w(-1080)])),
+  { width: 1920, height: 1080 },
+);
+
+// WebP 三种变体：扩展(VP8X) / 无损(VP8L) / 有损(VP8 )
+const webpPrefix = [...str('RIFF'), ...le32w(30), ...str('WEBP')];
+check(
+  'WebP(VP8X) 宽高（存的是值-1）',
+  parseImageSize(
+    bytes(webpPrefix, str('VP8X'), le32w(10), 0, 0, 0, 0, le24w(639), le24w(479)),
+  ),
+  { width: 640, height: 480 },
+);
+check(
+  'WebP(VP8L) 宽高（14 位打包）',
+  parseImageSize(bytes(webpPrefix, str('VP8L'), le32w(10), 0x2f, 0x7f, 0xc2, 0x77, 0x00, 0, 0, 0, 0, 0)),
+  { width: 640, height: 480 },
+);
+check(
+  'WebP(VP8 ) 宽高（起始码后 14 位）',
+  parseImageSize(
+    bytes(
+      webpPrefix,
+      str('VP8 '),
+      le32w(10),
+      le24w(0),
+      0x9d, 0x01, 0x2a,
+      le16w(640),
+      le16w(480),
+      le16w(0),
+    ),
+  ),
+  { width: 640, height: 480 },
+);
+
+// JPEG：SOF0 里的高/宽
+const sof0 = [0xff, 0xc0, ...be16w(17), 0x08, ...be16w(400), ...be16w(640), 0x03, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0];
+check('JPEG SOF 宽高', parseImageSize(bytes([0xff, 0xd8], sof0)), { width: 640, height: 400 });
+
+// JPEG + EXIF Orientation（6 表示旋转 90°，宽高必须互换才能对上浏览器显示尺寸）
+const exifApp1With = (orientation) => [
+  0xff, 0xe1, ...be16w(34),
+  ...str('Exif'), 0x00, 0x00,
+  0x49, 0x49, 0x2a, 0x00, ...le32w(8), // TIFF 头（小端），IFD0 在偏移 8
+  ...le16w(1), // 1 个条目
+  0x12, 0x01, 0x03, 0x00, ...le32w(1), ...le32w(orientation), // 0x0112 Orientation
+  ...le32w(0), // 无下一个 IFD
+];
+check(
+  'JPEG + EXIF 方向 6 → 宽高互换',
+  parseImageSize(bytes([0xff, 0xd8], exifApp1With(6), sof0)),
+  { width: 400, height: 640 },
+);
+check(
+  'JPEG + EXIF 方向 1 → 不互换',
+  parseImageSize(bytes([0xff, 0xd8], exifApp1With(1), sof0)),
+  { width: 640, height: 400 },
+);
+
+check('垃圾字节 → null', parseImageSize(bytes(Array.from({ length: 32 }, () => 0xab))), null);
+check('过短 → null', parseImageSize(bytes([0x89, 0x50])), null);
 
 /* ---------- 边缘吸附不得把框压成 0 宽/0 高 ----------
    吸附阈值大于最小框尺寸时，左右边会被吸附到同一位置 → 宽度 0 →

@@ -6,6 +6,7 @@ import { uid } from '../utils/id';
 import { naturalCompare } from '../utils/files';
 import { baseKey } from '../utils/yoloDataset';
 import { decodeBitmap, dropImage, makeImageId, registerSource } from '../utils/imageCache';
+import { readImageSize } from '../utils/imageSize';
 import { isImageFile } from '../utils/media';
 import { toast } from './toastStore';
 
@@ -1045,17 +1046,28 @@ export const useStore = create<AppState>((set, get) => {
           cursor += 1;
           if (i >= total) return;
           const img = missing[i];
-          let bmp: ImageBitmap | null = null;
-          try {
-            bmp = await decodeBitmap(img.file as Blob);
-            if (bmp.width > 0 && bmp.height > 0) {
-              sizes.set(img.id, { width: bmp.width, height: bmp.height });
+          const file = img.file as Blob;
+          // 先走零解码这条路：尺寸就写在文件头里，读前 256KB 即可。
+          // 以前对每张图都做一次**全尺寸解码**只为拿两个整数 —— 几百张图导出前
+          // 就是几百张全尺寸位图过一遍内存（4000×3000 的一张就是 48MB）。
+          // readImageSize 会按 EXIF 方向校正，与 decodeBitmap(from-image) 的尺寸一致。
+          const head = await readImageSize(file);
+          if (head) {
+            sizes.set(img.id, head);
+          } else {
+            // 读不到（未知格式 / 头部异常）才回退解码，保证行为不变
+            let bmp: ImageBitmap | null = null;
+            try {
+              bmp = await decodeBitmap(file);
+              if (bmp.width > 0 && bmp.height > 0) {
+                sizes.set(img.id, { width: bmp.width, height: bmp.height });
+              }
+            } catch {
+              /* 尺寸读不出就跳过这张，导出时仍会被滤掉 */
+            } finally {
+              // 必须释放，否则批量解码会持续占用内存
+              if (bmp) bmp.close();
             }
-          } catch {
-            /* 尺寸读不出就跳过这张，导出时仍会被滤掉 */
-          } finally {
-            // 必须释放，否则批量解码会持续占用内存
-            if (bmp) bmp.close();
           }
           done += 1;
           onProgress?.(done, total);

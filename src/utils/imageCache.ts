@@ -1,5 +1,6 @@
 import type { ImageItem } from '../types';
 import { uid } from './id';
+import { readImageSize, type ImageSize } from './imageSize';
 
 /**
  * 图片缓存：
@@ -149,6 +150,37 @@ function releaseThumbSlot(): void {
 }
 
 /**
+ * 为缩略图解码位图：**在解码阶段就降到目标尺寸**，不产生全尺寸位图。
+ *
+ * 这是缩略图这条路上最划算的一笔。缩略图只要 160px，而 `createImageBitmap` 默认
+ * 先把原图解成全尺寸（4000×3000 的照片 = 48MB 位图、几十毫秒 CPU），再缩到 160 画进
+ * canvas。已知原图尺寸后，把 `resizeWidth` / `resizeHeight` 交给浏览器，Chrome 的
+ * JPEG 解码器会走 DCT scaling，内存与耗时都能降一个数量级 —— 浏览几百张照片的左栏
+ * 尤其明显（以前等于每次滚动都在解几十张全尺寸大图）。
+ *
+ * 两种情况仍走全尺寸解码：
+ *  - 文件头读不出尺寸（未知格式）—— 保持原行为，不影响可用性；
+ *  - 原图本来就不大于缩略图 —— 降采样没有意义，还可能因二次重采样变糊。
+ */
+async function decodeThumbBitmap(src: Blob, size: ImageSize): Promise<ImageBitmap> {
+  if (Math.max(size.width, size.height) <= THUMB_SIZE) return decodeBitmap(src);
+  // 只给「长边」那一维，另一维由浏览器按比例推导（同时给两维会强制拉伸变形）
+  const opts: ImageBitmapOptions = {
+    imageOrientation: 'from-image',
+    resizeQuality: 'high',
+    ...(size.width >= size.height
+      ? { resizeWidth: THUMB_SIZE }
+      : { resizeHeight: THUMB_SIZE }),
+  };
+  try {
+    return await createImageBitmap(src, opts);
+  } catch {
+    // 老浏览器不认识 resize 选项 → 回退全尺寸解码，行为与改动前完全一致
+    return decodeBitmap(src);
+  }
+}
+
+/**
  * 把一张图渲染成缩略图。
  *
  * ⚠️ 关键：**不把全尺寸位图留进 LRU**。
@@ -157,12 +189,20 @@ function releaseThumbSlot(): void {
  *   1. 滚动左栏时会持续把「用户正在看的那张」挤出 LRU，切图时又要重新全尺寸解码
  *      （表现为按 ← 回去看上一张会卡一下）；
  *   2. `MAX_BITMAPS = 48` 限制的是**张数**不是字节数，48 张 96MB 的位图就是几个 GB。
- * 现在改成：已经在缓存里的直接复用（当前显示的那张），否则解一张**临时**位图，
+ * 现在改成：已经在缓存里的直接复用（当前显示的那张），否则解一张**降采样后的临时**位图，
  * 画完立刻 close()。
  */
 async function renderThumb(item: ImageItem, src: Blob): Promise<string> {
   const reused = peekBitmap(item.id);
-  const bmp = reused ?? (await decodeBitmap(src));
+  let bmp: ImageBitmap;
+  if (reused) {
+    bmp = reused;
+  } else {
+    // 先读文件头拿尺寸：能读到就在解码时直接降采样，省掉一张全尺寸位图。
+    // 读不到（未知格式）才退回全尺寸解码 —— 所以这条路只会变快。
+    const size = await readImageSize(src);
+    bmp = size ? await decodeThumbBitmap(src, size) : await decodeBitmap(src);
+  }
   try {
     const scale = Math.min(THUMB_SIZE / bmp.width, THUMB_SIZE / bmp.height, 1);
     const w = Math.max(1, Math.round(bmp.width * scale));
