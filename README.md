@@ -133,9 +133,10 @@ npm run share      # 生成干净的发布包 yolo-labeler-pages/（非 CI 部�
 
 **推到 GitHub 就完事** —— 仓库只存源码，`push main` 后 GitHub Actions 自动构建并发布 Pages。
 
-首次需要在仓库 **Settings → Pages → Source** 选一次「GitHub Actions」
+自己 fork 后首次部署时，需要在仓库 **Settings → Pages → Source** 选一次「GitHub Actions」
 （**必做**：来源还是分支时，GitHub 内置的分支式部署会在每次 push 后把线上覆盖成
-「标题能看见、脚本全 404」的坏页面，且与 Actions 部署抢先后、表现间歇）。
+「标题能看见、脚本全 404」的坏页面，且与 Actions 部署谁后完成谁生效、表现间歇）。
+本仓库已于 2026-10-18 切换完成。
 CI 里有一处探测会明确告诉你当前来源对不对 —— 不对就挂一条黄色警告注解。
 其它平台（对象存储 / 内网 / 离线分发包 / 本地起服务）以及 AI 模型加载失败的排查，
 见 **[发布说明.md](./发布说明.md)**。
