@@ -482,21 +482,36 @@ try {
   await sleep(1200);
 
   const vp = await evalJS(`
-    (() => ({
-      panel: !!document.querySelector('[data-vp-panel]'),
-      aiClosed: !document.querySelector('[data-ai-panel]'),
-      refs: document.querySelectorAll('[data-vp-ref]').length,
-      refOn: document.querySelectorAll('[data-vp-ref-on="1"]').length,
-      labels: document.querySelectorAll('[data-vp-label]').length,
-      trial: !!document.querySelector('[data-vp-trial]'),
-      batch: !!document.querySelector('[data-vp-batch]'),
-    }))()
+    (() => {
+      const trial = document.querySelector('[data-vp-trial]');
+      const batch = document.querySelector('[data-vp-batch]');
+      return {
+        panel: !!document.querySelector('[data-vp-panel]'),
+        aiClosed: !document.querySelector('[data-ai-panel]'),
+        refs: document.querySelectorAll('[data-vp-ref]').length,
+        refOn: document.querySelectorAll('[data-vp-ref-on="1"]').length,
+        labels: document.querySelectorAll('[data-vp-label]').length,
+        trial: !!trial,
+        batch: !!batch,
+        // 存在 ≠ 可用。模型是「点了按钮才下载」的，所以首次打开时
+        // 这两个按钮必须是**可点**的 —— 拿 status==='ready' 当门槛会死锁
+        // （按钮灰 → 点不了 → 模型不下 → ready 永远为 false）。
+        // 这里只读 disabled，**不点**：点了会真去下 20MB 模型。
+        trialEnabled: !!trial && trial.disabled === false,
+        batchEnabled: !!batch && batch.disabled === false,
+      };
+    })()
   `);
   check('「照样子找」panel opens (AI panel closes)', vp.panel === true && vp.aiClosed === true, JSON.stringify(vp));
   check('reference picker lists labeled images', vp.refs >= 1, JSON.stringify(vp));
   check('current image auto-picked as reference', vp.refOn >= 1, JSON.stringify(vp));
   check('label picker rendered', vp.labels >= 1, JSON.stringify(vp));
   check('trial + batch actions rendered', vp.trial === true && vp.batch === true, JSON.stringify(vp));
+  check(
+    'trial + batch are enabled before model download (no ready-gate deadlock)',
+    vp.trialEnabled === true && vp.batchEnabled === true,
+    JSON.stringify(vp),
+  );
 
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });

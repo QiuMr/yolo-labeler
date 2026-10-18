@@ -96,7 +96,16 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
   }, [labeled, refImageIds, labels]);
 
   const ready = status === 'ready';
+  const loading = status === 'loading';
   const working = busy !== 'none';
+  /**
+   * 动作按钮该被禁用的**唯一**理由：正在下载模型 / 正在推理。
+   *
+   * 这里**不能**用 `!ready`：模型是「点了按钮之后」才下载的，
+   * 拿 `ready` 当门槛会形成死锁 —— 按钮灰 → 点不了 → 模型永远不下载 → `ready` 永远为 false。
+   * 首次打开面板时 status 是 'idle'，按钮必须是**可点**的。
+   */
+  const blocked = working || loading;
   const refCount = refImageIds.length;
   const refBoxes = labeled
     .filter((i) => refImageIds.includes(i.id))
@@ -281,7 +290,9 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
             </div>
             {labelOptions.length === 0 ? (
               <p className="mt-2 text-micro leading-relaxed text-ink-4">
-                选中的参考图上还没有框 —— 换一张有框的图，或先在上面画一个。
+                {refCount === 0
+                  ? '上面还没勾选参考图 —— 勾一张有框的图当例子。'
+                  : '勾选的参考图上没有这个类别的框 —— 换一张，或先在上面画一个。'}
               </p>
             ) : (
               <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -352,13 +363,14 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           <div className="grid gap-2">
             <Button
               data-vp-trial
-              disabled={!ready || labelOptions.length === 0 || working}
+              disabled={blocked || labelOptions.length === 0}
               onClick={() => {
-                void runTrial();
-                onClose();
+                // 等推理真正结束（含首次的模型下载）再关面板：
+                // 立刻关掉的话，用户在「下 20MB + 建会话」那 7~8 秒里看不到任何反馈，会以为没反应。
+                void runTrial().finally(onClose);
               }}
             >
-              {busy === 'current' || busy === 'prompt' ? (
+              {busy === 'current' || busy === 'prompt' || loading ? (
                 <Loader2 className="animate-spin" />
               ) : (
                 <Sparkles />
@@ -370,7 +382,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               <button
                 type="button"
                 onClick={() => setBatchScope('empty')}
-                disabled={!ready}
+                disabled={working}
                 className={`flex-1 rounded-[10px] px-2 py-[5px] text-caption font-semibold transition-colors disabled:opacity-50 ${
                   batchScope === 'empty' ? 'bg-primary text-white' : 'text-ink-3 hover:text-ink-2'
                 }`}
@@ -380,7 +392,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               <button
                 type="button"
                 onClick={() => setBatchScope('all')}
-                disabled={!ready}
+                disabled={working}
                 className={`flex-1 rounded-[10px] px-2 py-[5px] text-caption font-semibold transition-colors disabled:opacity-50 ${
                   batchScope === 'all' ? 'bg-primary text-white' : 'text-ink-3 hover:text-ink-2'
                 }`}
@@ -392,7 +404,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
             <Button
               data-vp-batch
               variant="outline"
-              disabled={!ready || labelOptions.length === 0 || working}
+              disabled={blocked || labelOptions.length === 0}
               onClick={() => void runBatch(batchScope)}
             >
               照样子标{batchScope === 'empty' ? '剩下的' : '全部图片'}
