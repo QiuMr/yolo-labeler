@@ -48,6 +48,8 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
   const inputW = useAiStore((s) => s.inputW);
   const inputH = useAiStore((s) => s.inputH);
   const numClasses = useAiStore((s) => s.numClasses);
+  const modelNames = useAiStore((s) => s.modelNames);
+  const modelTask = useAiStore((s) => s.modelTask);
   const inputSizeFrom = useAiStore((s) => s.inputSizeFrom);
   const layoutInfo = useAiStore((s) => s.layoutInfo);
   const warmupError = useAiStore((s) => s.warmupError);
@@ -224,10 +226,24 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
               ) : null}
               {numClasses > 0 ? (
                 <span className="rounded-full bg-muted px-2 py-[3px] text-micro font-bold text-ink-3">
-                  {numClasses === 80 ? 'COCO 80 类' : `${numClasses} 类`}
+                  {numClasses} 类
+                  {modelNames.length > 0
+                    ? ' · 模型自带类名'
+                    : numClasses === 80
+                      ? ' · COCO 推断'
+                      : ''}
                 </span>
               ) : null}
             </div>
+
+            {/* 任务类型不对时直接说清楚：这三类模型的输出结构和检测完全不同，
+                以前只会得到一句「无法识别的输出布局」，用户并不知道是选错了模型 */}
+            {modelTask && modelTask !== 'detect' ? (
+              <p className="mt-2.5 rounded-[10px] border border-amber-400/40 bg-amber-400/15 px-2.5 py-2 text-micro leading-relaxed text-amber-600">
+                模型元数据里写的任务是「{modelTask}」，不是「detect」。本工具只解析检测输出，
+                请改用检测版（task=detect）导出的模型。
+              </p>
+            ) : null}
 
             {/* 诊断信息：识别不出问题时，这里能直接给出原因，不用靠猜 */}
             {warmupError ? (

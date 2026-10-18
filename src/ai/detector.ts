@@ -1,5 +1,6 @@
 import type { IRect } from '../types';
-import { readOnnxInputDims } from './onnxShape';
+import { parseClassNames } from './cocoNames';
+import { readOnnxInputDims, readOnnxMetadata, parseImgszHint } from './onnxShape';
 // ORT 引导层已抽到 ortRuntime.ts（segmenter 也要用），这里只做引用
 import {
   bootRuntime,
@@ -65,8 +66,15 @@ export class Detector {
   inputH = DEFAULT_INPUT;
   /** 类别数：第一次成功解析输出后才有值 */
   numClasses = 0;
+  /**
+   * 模型自带的类别名（ONNX metadata 的 `names`）。读不到时为 null。
+   * 有这个之后自定义模型不再显示「类别 1 / 类别 2」，而是模型里写好的真名（含中文）。
+   */
+  modelNames: string[] | null = null;
+  /** 模型自带的任务类型（metadata 的 `task`）：detect / segment / pose / classify */
+  modelTask = '';
   ep: 'WebGPU' | 'WASM' = 'WebGPU';
-  /** 输入尺寸是怎么定下来的：onnx / meta / probe / default（展示给用户排查） */
+  /** 输入尺寸是怎么定下来的：onnx / onnx-meta / meta / probe / default（展示给用户排查） */
   inputSizeFrom = 'default';
   /** 最近一次推理拿到的输出布局描述（排查用；空串=还没跑过） */
   layoutInfo = '';
@@ -74,6 +82,8 @@ export class Detector {
   warmupError = '';
   /** 模型字节（保留引用以便需要时再解析） */
   private modelBytes: Uint8Array | null = null;
+  /** metadata 里的 imgsz：动态轴模型确定输入尺寸的第二来源 */
+  private metaImgsz: [number, number] | null = null;
 
   get ready(): boolean {
     return this.session !== null;
@@ -93,9 +103,15 @@ export class Detector {
     this.session = null;
     this.warmed = false;
     this.numClasses = 0;
+    this.modelNames = null;
+    this.modelTask = '';
+    this.metaImgsz = null;
     this.layoutInfo = '';
     this.warmupError = '';
     this.modelBytes = bytes;
+    // 元数据要在这里就读出来：类名必须在解析输出之前就位（numClasses 的推断依赖它），
+    // imgsz 则是后面 applyGeometry 的第二层依据
+    this.applyModelMetadata(bytes);
 
     const created = await createSession(ort, bytes, (msg, err) =>
       console.warn(`[detector] ${msg}`, err),
@@ -110,10 +126,25 @@ export class Detector {
   }
 
   /**
-   * 确定输入尺寸。三层策略，从可靠到兜底：
+   * 读模型自带的元数据（`names` / `task` / `imgsz`）。
+   *
+   * **任何一项读不到都只是降级，绝不能让模型加载失败** —— 被 `onnx.utils.extract_model`
+   * 或 pnnx 转换过的模型整段元数据是空的（实测 yolov10n.onnx、yolo26n.pnnx.onnx），
+   * 这时类名回退成「类别 N」、输入尺寸回退到后面的探测流程，一切照旧。
+   */
+  private applyModelMetadata(bytes: Uint8Array): void {
+    const meta = readOnnxMetadata(bytes);
+    this.modelNames = parseClassNames(meta?.names);
+    this.modelTask = meta?.task ?? '';
+    this.metaImgsz = parseImgszHint(meta?.imgsz);
+  }
+
+  /**
+   * 确定输入尺寸。四层策略，从可靠到兜底：
    *  1. 直接解析 ONNX 图里的静态维度 —— 最权威，静态导出必走这一步；
-   *  2. ORT 的 inputMetadata（不同版本/EP 形态不一致，拿不到就跳过）；
-   *  3. 运行时探测：拿候选尺寸逐个试跑，第一个不报错的即采用。
+   *  2. ONNX metadata 的 `imgsz` —— 训练分辨率，动态轴模型的最优解；
+   *  3. ORT 的 inputMetadata（不同版本/EP 形态不一致，拿不到就跳过）；
+   *  4. 运行时探测：拿候选尺寸逐个试跑，第一个不报错的即采用。
    * 全部失败才退回 640。
    */
   private async applyGeometry(): Promise<void> {
@@ -133,7 +164,19 @@ export class Detector {
       }
     }
 
-    // ② ORT 元数据
+    // ② metadata 的 imgsz。
+    //    这层是补上一个真实存在的坑：动态轴模型在 ① 拿不到静态维（-1），
+    //    以前直接进 ④「探测」，而探测列表里 768 排在 640 前面 ——
+    //    于是 640 训出来的模型被喂 768：**能跑，不报错，但和训练分辨率不一致，精度会掉**，
+    //    而且用户完全看不出哪里不对。Ultralytics 的导出里 imgsz 是必写的，读了它就不用猜。
+    if (this.metaImgsz) {
+      this.inputW = this.metaImgsz[0];
+      this.inputH = this.metaImgsz[1];
+      this.inputSizeFrom = 'onnx-meta';
+      return;
+    }
+
+    // ③ ORT 元数据
     const meta = this.getInputShape(sess, sess.inputNames[0]).filter(
       (d): d is number => typeof d === 'number' && Number.isFinite(d) && d > 1,
     );
@@ -144,7 +187,7 @@ export class Detector {
       return;
     }
 
-    // ③ 探测：必须在 warmup 之前完成，否则预热会拿旧尺寸去跑
+    // ④ 探测：必须在 warmup 之前完成，否则预热会拿旧尺寸去跑
     this.inputSizeFrom = 'probe';
     await this.probeInputSize();
   }
@@ -399,9 +442,16 @@ export class Detector {
       if (cls > maxCls) maxCls = cls;
       boxes.push({ x1: at(i, 0), y1: at(i, 1), x2: at(i, 2), y2: at(i, 3), score, cls });
     }
-    // 官方 e2e 权重是 COCO 80 类；自定义模型若类别更多则以观测到的最大类号为准
-    this.numClasses = Math.max(80, maxCls + 1);
-    this.layoutInfo = `端到端 NMS-Free [${count}, 6]，不再做 NMS`;
+    // 有模型自带类名时以它为准：自定义端到端模型因此不再被误判成 COCO 80 类
+    // （以前无条件 Math.max(80, …)，一个 7 类自训 e2e 模型会被贴上 'person' / 'bicycle'
+    //  这些根本不属于它的名字 —— 静默产出错误标签）。
+    // 没有类名时保持原启发式：官方 e2e 权重是 COCO 80 类，类别更多则以观测到的最大类号为准。
+    // 用 length > 0 而不是 `??`：空数组同样应当回退，否则 numClasses 会变成 0。
+    const named = this.modelNames && this.modelNames.length > 0 ? this.modelNames.length : 0;
+    this.numClasses = named > 0 ? named : Math.max(80, maxCls + 1);
+    this.layoutInfo =
+      `端到端 NMS-Free [${count}, 6]，不再做 NMS` +
+      (named > 0 ? '' : '（未读到模型类名，按 COCO 80 类推断）');
     return boxes;
   }
 
@@ -461,6 +511,7 @@ interface RawBox {
   score: number;
   cls: number;
 }
+
 
 /** 统一成 Float32Array：int64 输出（BigInt64Array）也能正常参与数值比较 */
 function toFloat32(data: Float32Array | BigInt64Array): Float32Array {

@@ -26,6 +26,10 @@ interface AiState {
   inputW: number;
   inputH: number;
   numClasses: number;
+  /** 模型自带的类别名（ONNX metadata 的 `names`）。空数组=模型没写类名，走索引兜底 */
+  modelNames: string[];
+  /** 模型自带任务类型（metadata 的 `task`）。空串=读不到 */
+  modelTask: string;
   /** 输入尺寸来源：onnx / meta / probe:768 / default（排查用） */
   inputSizeFrom: string;
   /** 最近一次推理的输出布局（排查用） */
@@ -66,7 +70,8 @@ function toCandidates(
   return dets.map((d) => ({
     rect: d.rect,
     score: d.score,
-    className: classNameFor(d.classIndex, detector.numClasses),
+    // 优先用模型自带的类名；读不到才回退到 COCO 表 / 类别 N
+    className: classNameFor(d.classIndex, detector.numClasses, detector.modelNames),
   }));
 }
 
@@ -81,6 +86,8 @@ export const useAiStore = create<AiState>((set, get) => {
       inputW: detector.inputW,
       inputH: detector.inputH,
       numClasses: detector.numClasses,
+      modelNames: detector.modelNames ?? [],
+      modelTask: detector.modelTask,
       inputSizeFrom: detector.inputSizeFrom,
       layoutInfo: detector.layoutInfo,
       warmupError: detector.warmupError,
@@ -96,6 +103,8 @@ export const useAiStore = create<AiState>((set, get) => {
     inputW: 0,
     inputH: 0,
     numClasses: 0,
+    modelNames: [],
+    modelTask: '',
     inputSizeFrom: '',
     layoutInfo: '',
     warmupError: '',

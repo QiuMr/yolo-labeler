@@ -1,9 +1,10 @@
-// ONNX 形状解析 + YOLO 标注/类别解析 的回归测试
+// ONNX 形状/元数据解析 + YOLO 标注/类别解析 的回归测试
 // 运行：npm run test:parse
 // 原理：用 esbuild 把 TS 源码转成 .tmp/ 下的 ESM，再由 node 直接跑断言。
 //       ONNX 是 protobuf，测试用手工编码的合法字节流（而不是依赖真实 .onnx 文件），
 //       因此静态维、动态维、非方形、垃圾字节都能稳定覆盖。
-import { readOnnxInputDims } from '../.tmp/ai/onnxShape.js';
+import { readOnnxInputDims, readOnnxMetadata, parseImgszHint } from '../.tmp/ai/onnxShape.js';
+import { parseClassNames, classNameFor } from '../.tmp/ai/cocoNames.js';
 import { snapRectToEdges } from '../.tmp/utils/geometry.js';
 import {
   parseClassesTxt,
@@ -85,6 +86,85 @@ check('非方形 960x544', readOnnxInputDims(buildOnnx([1, 3, 544, 960])), [1, 3
 check('动态轴', readOnnxInputDims(buildOnnx([1, 3, 'height', 'width'])), [1, 3, -1, -1]);
 check('非 ONNX 垃圾字节', readOnnxInputDims(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), null);
 check('空文件', readOnnxInputDims(new Uint8Array(0)), null);
+
+/* ---------- ONNX metadata_props（类名的来源） ----------
+   ModelProto.metadata_props = 14（repeated StringStringEntryProto）
+   StringStringEntryProto.key = 1, .value = 2
+   Ultralytics 导出时把 names / task / imgsz 写在这里；被 extract_model 或 pnnx
+   处理过的模型这段会整体消失，所以「读不到」必须是正常返回而不是抛错。 */
+function utf8Field(field, s) {
+  return lenDelim(field, [...new TextEncoder().encode(s)]);
+}
+/** 注意返回 Uint8Array（不是普通数组）：解析器要按字节区间 subarray，数组没有这个方法 */
+function metaEntry(key, value) {
+  return concat(lenDelim(14, concat(utf8Field(1, key), utf8Field(2, value))));
+}
+
+console.log('\nONNX 元数据解析：');
+check(
+  '读到 names / task / imgsz',
+  readOnnxMetadata(
+    concat(
+      metaEntry('task', 'detect'),
+      metaEntry('imgsz', '[640, 640]'),
+      metaEntry('names', "{0: 'person', 1: 'bicycle'}"),
+    ),
+  ),
+  { task: 'detect', imgsz: '[640, 640]', names: "{0: 'person', 1: 'bicycle'}" },
+);
+check(
+  '中文类名按 UTF-8 正确解出',
+  readOnnxMetadata(metaEntry('names', "{0: '黄-半', 1: '道具'}"))?.names,
+  "{0: '黄-半', 1: '道具'}",
+);
+check('没有 metadata_props → null', readOnnxMetadata(buildOnnx([1, 3, 640, 640])), null);
+check('空文件 → null', readOnnxMetadata(new Uint8Array(0)), null);
+check('垃圾字节 → null', readOnnxMetadata(new Uint8Array([0xff, 0xff, 0xff, 0xff])), null);
+check(
+  '元数据与 graph 共存时形状仍能读出',
+  readOnnxInputDims(concat(buildOnnx([1, 3, 768, 768]), metaEntry('task', 'detect'))),
+  [1, 3, 768, 768],
+);
+
+console.log('\n类别名解析（parseClassNames）：');
+check('Python dict', parseClassNames("{0: 'person', 1: 'bicycle'}"), ['person', 'bicycle']);
+check('中文类名', parseClassNames("{0: '黄-半', 1: '黄-头', 2: '道具'}"), [
+  '黄-半',
+  '黄-头',
+  '道具',
+]);
+// 索引不连续时必须保留洞位：以前 data.yaml 解析就踩过「跳过空位导致类别号整体错位」
+check('索引有洞 → 洞位留空串，不左移', parseClassNames("{0: 'a', 2: 'c'}"), ['a', '', 'c']);
+check('单引号里的转义', parseClassNames("{0: 'it\\'s'}"), ["it's"]);
+check('\\u 转义', parseClassNames("{0: '\\u9ec4\\u534a'}"), ['黄半']);
+check('JSON 对象', parseClassNames('{"0": "cat", "1": "dog"}'), ['cat', 'dog']);
+check('JSON 数组', parseClassNames('["cat", "dog"]'), ['cat', 'dog']);
+check('Python 列表', parseClassNames("['cat', 'dog']"), ['cat', 'dog']);
+check('空串 → null', parseClassNames(''), null);
+check('undefined → null', parseClassNames(undefined), null);
+check('空 dict → null', parseClassNames('{}'), null);
+check('非类别文本 → null', parseClassNames('hello'), null);
+
+console.log('\nimgsz 解析（parseImgszHint）：');
+check('[640, 640]', parseImgszHint('[640, 640]'), [640, 640]);
+check('训练用小图 [256, 256]', parseImgszHint('[256, 256]'), [256, 256]);
+check('非方形 [640, 480]', parseImgszHint('[640, 480]'), [480, 640]);
+check('只写一个数', parseImgszHint('640'), [640, 640]);
+check('空串 → null', parseImgszHint(''), null);
+check('undefined → null', parseImgszHint(undefined), null);
+check('无数字 → null', parseImgszHint('imgsz'), null);
+// 区间过滤：离谱值宁可当没读到，也不要拿去当输入尺寸
+check('过小被过滤 → null', parseImgszHint('[0, 8]'), null);
+check('过大被过滤 → null', parseImgszHint('[99999]'), null);
+
+console.log('\n类别显示名（classNameFor）：');
+const MODEL_NAMES = ['黄-半', '黄-头', '道具'];
+check('模型自带类名优先', classNameFor(1, 3, MODEL_NAMES), '黄-头');
+check('模型类名有洞位时回退索引名', classNameFor(1, 3, ['a', '', 'c']), '类别 2');
+check('无类名 + 80 类 → COCO 表', classNameFor(0, 80, null), 'person');
+check('无类名 + 非 80 类 → 索引名', classNameFor(0, 7, null), '类别 1');
+check('类名数组越界 → 索引名', classNameFor(9, 3, MODEL_NAMES), '类别 10');
+check('无类名 + 80 类越界 → 索引名', classNameFor(99, 80, null), '类别 100');
 
 console.log('\nYOLO 标注解析：');
 check(
