@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ChevronRight,
   Cpu,
   FileUp,
   Loader2,
+  MousePointerClick,
   RefreshCw,
   ShieldCheck,
   Sparkles,
   X,
   Zap,
 } from 'lucide-react';
+import { classNameFor } from '../ai/cocoNames';
 import { useAiStore } from '../store/aiStore';
+import { useSegStore } from '../store/segStore';
 import { useStore } from '../store/useStore';
 import { toast } from '../store/toastStore';
 import { Button } from '@/components/ui/button';
@@ -21,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
 
@@ -50,6 +55,7 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
   const numClasses = useAiStore((s) => s.numClasses);
   const modelNames = useAiStore((s) => s.modelNames);
   const modelTask = useAiStore((s) => s.modelTask);
+  const classNamesOverride = useAiStore((s) => s.classNamesOverride);
   const inputSizeFrom = useAiStore((s) => s.inputSizeFrom);
   const layoutInfo = useAiStore((s) => s.layoutInfo);
   const warmupError = useAiStore((s) => s.warmupError);
@@ -61,6 +67,7 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
   const init = useAiStore((s) => s.init);
   const loadModelFile = useAiStore((s) => s.loadModelFile);
   const setConf = useAiStore((s) => s.setConf);
+  const setClassName = useAiStore((s) => s.setClassName);
   const runCurrent = useAiStore((s) => s.runCurrent);
   const runBatch = useAiStore((s) => s.runBatch);
   const cancelBatch = useAiStore((s) => s.cancelBatch);
@@ -89,6 +96,18 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
   const [dragOver, setDragOver] = useState(false);
   // 批量范围：empty=只跑没有框的图（默认）；all=全部重跑（对已有框的图追加）
   const [batchScope, setBatchScope] = useState<'empty' | 'all'>('empty');
+
+  /**
+   * 「类别名」区块是否展开。默认由**模型有没有自带类名**决定：
+   * 有 → 一般不用改，收起；没有（多半是被 extract_model / pnnx 剥掉了元数据）→ 展开，
+   * 因为这时候满屏的「类别 1 / 类别 2」正是用户要改的东西，藏起来等于没做。
+   * 用户手动折叠后不会被重置（依赖里没有 namesOpen 本身）。
+   */
+  const [namesOpen, setNamesOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setNamesOpen(modelNames.length === 0);
+  }, [open, modelName, modelNames.length]);
 
   // 首次打开才引导引擎 + 自动复用上次选过的模型；没选过则引导手动挑一个
   useEffect(() => {
@@ -139,7 +158,7 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
             <div className="min-w-0">
               <DialogTitle className="text-title">AI 辅助标注</DialogTitle>
               <DialogDescription className="mt-0.5 text-caption">
-                自动找出图里的目标，你只负责确认
+                一次给整张图找出目标，你只负责确认
               </DialogDescription>
             </div>
           </div>
@@ -230,7 +249,7 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
                   {modelNames.length > 0
                     ? ' · 模型自带类名'
                     : numClasses === 80
-                      ? ' · COCO 推断'
+                      ? ' · 按常见 80 类套用'
                       : ''}
                 </span>
               ) : null}
@@ -245,16 +264,26 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
               </p>
             ) : null}
 
-            {/* 诊断信息：识别不出问题时，这里能直接给出原因，不用靠猜 */}
+            {/* 诊断信息。以前是常驻的一行「输出布局：e2e [1,300,6] × nc=80」——
+                对不写代码的人来说是天书，而且平时根本不需要看，
+                真正需要它的只有「模型跑了但什么都没有」这一种情况。
+                所以收进默认收起的折叠里，只在下面这句话里告诉用户「什么时候来看」。
+                真错误（预热失败）仍然常驻，那个是必须马上知道的。 */}
             {warmupError ? (
               <p className="mt-2.5 rounded-[10px] border border-destructive/30 bg-destructive/[0.07] px-2.5 py-2 text-micro leading-relaxed text-destructive">
                 模型预热失败：{warmupError}
               </p>
             ) : layoutInfo ? (
-              <p className="mt-2.5 text-micro leading-relaxed text-ink-4">
-                输出布局：{layoutInfo}
-                {inputSizeFrom ? ` · 输入尺寸来自 ${inputSizeFrom}` : ''}
-              </p>
+              <details className="group mt-2.5">
+                <summary className="flex cursor-pointer list-none items-center gap-1 text-micro text-ink-4 transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden">
+                  <ChevronRight className="size-3 flex-shrink-0 transition-transform group-open:rotate-90" />
+                  识别不出来？点开看诊断信息
+                </summary>
+                <p className="mt-1.5 break-all text-micro leading-relaxed text-ink-4">
+                  输出布局：{layoutInfo}
+                  {inputSizeFrom ? ` · 输入尺寸来自 ${inputSizeFrom}` : ''}
+                </p>
+              </details>
             ) : null}
           </div>
         ) : (
@@ -284,10 +313,95 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
             <span className="text-micro leading-relaxed text-ink-4">
               支持 YOLO26 / YOLOv8 / YOLOv11 / YOLOv5 检测模型
               <br />
-              80 类 COCO 模型会自动识别类名
+              模型里写了类名就会自动用上（常见的 80 类模型能直接认出英文名）
             </span>
           </button>
         )}
+
+        {/* 手上没有 .onnx，是这里最常见的死路：面板只写「拖入模型」，
+            可绝大多数人根本没有 onnx 文件，看到这句只会以为
+            「AI 功能得自己先准备模型」，然后直接放弃这个功能。
+            而画布左上角的「点击标注」用的是**随工具内置**的模型（42MB 随站点发），
+            不需要用户提供任何文件 —— 这个事实必须在这里说出来，
+            否则一条本来开箱即用的链路会被彻底埋掉。
+            按钮直接帮他进入那个模式，省掉「回去找那个小按钮」的一步。 */}
+        {status === 'idle' ? (
+          <div className="rounded-[16px] border border-line bg-muted/50 px-3.5 py-3">
+            <div className="flex items-center gap-1.5 text-caption font-bold text-ink-2">
+              <MousePointerClick className="size-[14px] flex-shrink-0 text-primary" />
+              手上没有模型文件？
+            </div>
+            <p className="mt-1 text-micro leading-relaxed text-ink-3">
+              画布左上角的「<span className="font-semibold text-ink-2">点击标注</span>
+              」用的是随工具内置的模型，不用准备任何文件 —— 点一下物体就能出框。
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-2.5 w-full"
+              disabled={!hasImage}
+              onClick={() => {
+                void useSegStore.getState().open();
+                onClose();
+              }}
+            >
+              用内置模型标注（不需要文件）
+            </Button>
+          </div>
+        ) : null}
+
+        {/* ===== 类别名 =====
+            模型没写类名（被 extract_model / pnnx 剥掉元数据）时，
+            「类别 1 / 类别 2」会一路带进标签、带进导出的数据集。
+            这里给一个就地改名的入口 —— 这比让用户去准备一个 classes.txt 现实得多：
+            他要的是「这个框叫『黄-半』」，不是「先搞清楚 classes.txt 是什么格式」。 */}
+        {ready && numClasses > 0 ? (
+          <div className="rounded-[16px] border border-line bg-card px-4 py-3.5 [box-shadow:var(--shadow-xs)]">
+            <button
+              type="button"
+              aria-expanded={namesOpen}
+              onClick={() => setNamesOpen((v) => !v)}
+              className="flex w-full items-center gap-1.5 text-left"
+            >
+              <ChevronRight
+                className={`size-3 flex-shrink-0 text-ink-4 transition-transform ${
+                  namesOpen ? 'rotate-90' : ''
+                }`}
+              />
+              <span className="flex-shrink-0 text-caption font-bold text-ink-2">类别名</span>
+              <span className="min-w-0 flex-1 truncate text-micro text-ink-4">
+                {modelNames.length > 0 ? '模型自带，一般不用改' : '模型没写类名，可以在这里改'}
+              </span>
+            </button>
+
+            {namesOpen ? (
+              <>
+                <div className="mt-2.5 max-h-[188px] space-y-1 overflow-y-auto pr-0.5">
+                  {Array.from({ length: numClasses }, (_, i) => (
+                    <label key={i} className="flex items-center gap-2">
+                      <span className="num w-[34px] flex-shrink-0 text-right text-micro text-ink-4">
+                        #{i + 1}
+                      </span>
+                      <Input
+                        value={classNamesOverride[i] ?? ''}
+                        placeholder={classNameFor(i, numClasses, modelNames)}
+                        onChange={(e) => setClassName(i, e.target.value)}
+                        className="h-[28px] flex-1 text-caption"
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label={`类别 ${i + 1} 的名字`}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-2 text-micro leading-relaxed text-ink-4">
+                  框里灰色的是现在的默认名，直接输入就能改。改完的名字会用在自动生成的标签上；
+                  已经标好的框要改名，双击左侧标签改一次，所有框会一起变。
+                </p>
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* ===== 置信度 ===== */}
         <div className="rounded-[16px] border border-line bg-card px-4 py-3.5 [box-shadow:var(--shadow-xs)]">

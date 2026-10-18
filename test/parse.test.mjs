@@ -166,6 +166,21 @@ check('无类名 + 非 80 类 → 索引名', classNameFor(0, 7, null), '类别 
 check('类名数组越界 → 索引名', classNameFor(9, 3, MODEL_NAMES), '类别 10');
 check('无类名 + 80 类越界 → 索引名', classNameFor(99, 80, null), '类别 100');
 
+// 用户在面板「类别名」里自己改的名字（第 4 个参数）优先级最高。
+// 模型元数据被 extract_model / pnnx 剥掉时，这是唯一能拿到「人话类名」的路。
+const OVERRIDES = ['', '黄-头（改）', ''];
+check('用户改的名字优先于模型类名', classNameFor(1, 3, MODEL_NAMES, OVERRIDES), '黄-头（改）');
+check('该项没改（空串）→ 回退模型类名', classNameFor(0, 3, MODEL_NAMES, OVERRIDES), '黄-半');
+check('模型没类名时用户名字照样生效', classNameFor(2, 7, null, ['', '', '道具']), '道具');
+check('用户清空输入框 → 回退索引名', classNameFor(2, 7, null, ['', '', '']), '类别 3');
+check('overrides 比类别数短 → 缺的走回退', classNameFor(5, 7, null, ['仅第一个']), '类别 6');
+check('overrides 传 undefined 时行为不变', classNameFor(0, 80, null, undefined), 'person');
+check(
+  '用户名字也压过 COCO 表',
+  classNameFor(0, 80, null, ['我的车']),
+  '我的车',
+);
+
 console.log('\nYOLO 标注解析：');
 check(
   '标准两行',

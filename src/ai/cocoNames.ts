@@ -110,9 +110,14 @@ function unescapeLiteral(s: string): string {
 /**
  * 类别显示名。优先级从权威到兜底：
  *
- *  1. **模型自带类名**（ONNX metadata 的 `names`）—— 最权威，自定义模型的中文类名走这条；
- *  2. 拿不到类名且类别数正好是 80 时，按 COCO 表显示英文名（绝大多数通用检测模型都是这套）；
- *  3. 都没有 → `类别 N`（索引名）。
+ *  1. **用户自己改的名字**（`overrides`，来自 AI 面板的「类别名」输入框）—— 最高优先级。
+ *     模型没写类名（被 `extract_model` / pnnx 剥掉元数据）时这是唯一的出路，
+ *     而且用户改了就一直生效，不必回头再改标签；
+ *  2. **模型自带类名**（ONNX metadata 的 `names`）—— 自定义模型的中文类名走这条；
+ *  3. 拿不到类名且类别数正好是 80 时，按 COCO 表显示英文名（绝大多数通用检测模型都是这套）；
+ *  4. 都没有 → `类别 N`（索引名）。
+ *
+ * 空串一律视为「没改 / 没读到」，继续往下回退 —— 这样清空输入框就等于恢复默认。
  *
  * 这个名字同时也是「采纳后」自动创建的标签名，所以能读到真名时导出的数据集
  * 里就不再是「类别 1 / 类别 2」这种无意义的名字了。
@@ -121,7 +126,10 @@ export function classNameFor(
   classIndex: number,
   numClasses: number,
   modelNames?: readonly string[] | null,
+  overrides?: readonly string[] | null,
 ): string {
+  const fromUser = overrides?.[classIndex];
+  if (fromUser) return fromUser;
   const fromModel = modelNames?.[classIndex];
   if (fromModel) return fromModel;
   if (numClasses === COCO_NAMES.length) {

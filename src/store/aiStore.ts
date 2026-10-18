@@ -3,7 +3,7 @@ import { Detector } from '../ai/detector';
 import { classNameFor } from '../ai/cocoNames';
 import type { IRect } from '../types';
 import { loadBitmap } from '../utils/imageCache';
-import { loadSavedModel, saveModel } from '../utils/modelStore';
+import { loadClassNames, loadSavedModel, saveClassNames, saveModel } from '../utils/modelStore';
 import { useStore } from './useStore';
 import { toast } from './toastStore';
 
@@ -12,6 +12,12 @@ export interface AiCandidate {
   rect: IRect;
   score: number;
   className: string;
+  /**
+   * 模型输出的类别号。
+   * 必须留着：用户在面板里改了某个类别的名字后，已经算好的候选框要按它重算名字
+   * （只留 className 的话，改完名字旧候选框还挂着旧名，采纳下去就是错的标签）。
+   */
+  classIndex: number;
 }
 
 export type AiStatus = 'idle' | 'booting' | 'loading' | 'ready' | 'error';
@@ -30,6 +36,13 @@ interface AiState {
   modelNames: string[];
   /** 模型自带任务类型（metadata 的 `task`）。空串=读不到 */
   modelTask: string;
+  /**
+   * 用户在面板的「类别名」里自己改过的名字（按类别号对齐，空串=没改）。
+   * 跟着模型一起存在 localStorage（见 modelStore.saveClassNames）——
+   * 不存的话，刷新后再跑一次批量标注会拿回「类别 1」并**新建一个同名的另一个标签**，
+   * 同一类东西在左侧裂成两行，用户很难自己想明白。
+   */
+  classNamesOverride: string[];
   /** 输入尺寸来源：onnx / meta / probe:768 / default（排查用） */
   inputSizeFrom: string;
   /** 最近一次推理的输出布局（排查用） */
@@ -49,6 +62,8 @@ interface AiState {
   init: () => Promise<void>;
   loadModelFile: (file: File) => Promise<void>;
   setConf: (v: number) => void;
+  /** 改某个类别的名字（空串 = 恢复默认名）；会同步刷新已生成的候选框 */
+  setClassName: (index: number, name: string) => void;
   runCurrent: () => Promise<void>;
   /** 批量跑：empty=只跑还没有任何框的图；all=所有图都跑（已有框的图会追加） */
   runBatch: (scope?: 'empty' | 'all') => Promise<void>;
@@ -66,12 +81,14 @@ function messageOf(e: unknown): string {
 
 function toCandidates(
   dets: Array<{ rect: IRect; score: number; classIndex: number }>,
+  overrides: readonly string[],
 ): AiCandidate[] {
   return dets.map((d) => ({
     rect: d.rect,
     score: d.score,
-    // 优先用模型自带的类名；读不到才回退到 COCO 表 / 类别 N
-    className: classNameFor(d.classIndex, detector.numClasses, detector.modelNames),
+    classIndex: d.classIndex,
+    // 优先用用户改过的名字，其次模型自带的类名，再回退到 COCO 表 / 类别 N
+    className: classNameFor(d.classIndex, detector.numClasses, detector.modelNames, overrides),
   }));
 }
 
@@ -88,6 +105,8 @@ export const useAiStore = create<AiState>((set, get) => {
       numClasses: detector.numClasses,
       modelNames: detector.modelNames ?? [],
       modelTask: detector.modelTask,
+      // 换模型了：上一份自定义类名不再对应，改成读**这个模型自己**那份（没有则为空）
+      classNamesOverride: loadClassNames(name),
       inputSizeFrom: detector.inputSizeFrom,
       layoutInfo: detector.layoutInfo,
       warmupError: detector.warmupError,
@@ -105,6 +124,7 @@ export const useAiStore = create<AiState>((set, get) => {
     numClasses: 0,
     modelNames: [],
     modelTask: '',
+    classNamesOverride: [],
     inputSizeFrom: '',
     layoutInfo: '',
     warmupError: '',
@@ -152,6 +172,24 @@ export const useAiStore = create<AiState>((set, get) => {
 
     setConf: (v) => set({ conf: v }),
 
+    setClassName: (index, name) => {
+      const num = get().numClasses;
+      if (index < 0 || index >= num) return;
+      const overrides = get().classNamesOverride.slice();
+      while (overrides.length < num) overrides.push('');
+      overrides[index] = name;
+      set({
+        classNamesOverride: overrides,
+        // 已经算好的候选框要跟着改名，否则用户改完名字、采纳下去的还是旧名
+        candidates: get().candidates.map((c) => ({
+          ...c,
+          className: classNameFor(c.classIndex, num, detector.modelNames, overrides),
+        })),
+      });
+      // 跟着模型一起记住：下次打开、或换回来这个模型时名字还在
+      saveClassNames(get().modelName, overrides);
+    },
+
     runCurrent: async () => {
       const st = get();
       if (st.status !== 'ready' || st.busy !== 'none') return;
@@ -170,7 +208,7 @@ export const useAiStore = create<AiState>((set, get) => {
         const dets = await detector.detect(bmp, st.conf);
         set({
           numClasses: detector.numClasses,
-          candidates: toCandidates(dets),
+          candidates: toCandidates(dets, get().classNamesOverride),
           candidatesImageId: img.id,
           layoutInfo: detector.layoutInfo,
           inputSizeFrom: detector.inputSizeFrom,
@@ -225,7 +263,7 @@ export const useAiStore = create<AiState>((set, get) => {
           if (dets.length > 0) {
             useStore
               .getState()
-              .applyAiBoxes(img.id, toCandidates(dets), bmp.width, bmp.height);
+              .applyAiBoxes(img.id, toCandidates(dets, get().classNamesOverride), bmp.width, bmp.height);
             boxCount += dets.length;
             touched += 1;
           }

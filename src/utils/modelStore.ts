@@ -76,3 +76,50 @@ export async function saveModel(name: string, size: number, bytes: ArrayBuffer):
     }
   });
 }
+
+/**
+ * 用户手改的类别名，跟着模型一起记住。
+ *
+ * 刻意**不塞进上面那条 IndexedDB 记录**里：那条记录的 value 里带着几十 MB 的 onnx 字节，
+ * 把类名放进去的话，用户每敲一个字母都要把整个大对象重写一遍。
+ * 类名只是一小段文本，放 localStorage 就够；并且用**模型名做校验** ——
+ * 换了模型旧名字直接失效，绝不会把 A 模型的类名安到 B 模型头上。
+ *
+ * 为什么必须持久化：不存的话，刷新页面后再跑一次批量标注，
+ * 新框会用回「类别 1」并**新建一个同名不同 id 的标签**，
+ * 于是同一类东西在左侧裂成两行 —— 用户很难自己想明白这是怎么回事。
+ */
+const NAMES_KEY = 'yolo-labeler:class-names';
+
+interface SavedClassNames {
+  model: string;
+  names: string[];
+}
+
+export function loadClassNames(modelName: string): string[] {
+  if (!modelName) return [];
+  try {
+    const raw = localStorage.getItem(NAMES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Partial<SavedClassNames>;
+    if (parsed?.model !== modelName || !Array.isArray(parsed.names)) return [];
+    return parsed.names.filter((n): n is string => typeof n === 'string');
+  } catch {
+    return [];
+  }
+}
+
+export function saveClassNames(modelName: string, names: string[]): void {
+  if (!modelName) return;
+  try {
+    // 一个名字都没改（全是空串）等于没自定义，别留下无用记录，
+    // 否则下次同名模型会被一段空名字覆盖
+    if (!names.some((n) => n)) {
+      localStorage.removeItem(NAMES_KEY);
+      return;
+    }
+    localStorage.setItem(NAMES_KEY, JSON.stringify({ model: modelName, names }));
+  } catch {
+    /* 隐私模式 / 配额满：存不下不影响本次改名与标注 */
+  }
+}
