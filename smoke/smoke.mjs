@@ -448,6 +448,60 @@ try {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await sleep(300);
 
+  // ---- 9b. 「照样子找」面板（YOLOE 视觉提示）-------------------------------
+  // 与上面的「AI 辅助」并列的第二条 AI 链路，但**不需要用户准备任何 .onnx**
+  // （模型随站点内置，见 public/models/yoloe26n-vp.onnx）。
+  // 这里只验证 UI 挂到了对的地方 —— 推理本身已经在 .tmp/yoloe-web/verify_vp.mjs
+  // 里与 Python 基准逐值对拍过（512 维提示向量最大差 1.2e-7）。
+  // 刻意**不点「先试标一张」**：那会真的下载 20MB 模型并建会话，
+  // 无头环境（--disable-gpu，只能走 WASM）要多花十几秒，而它不验证任何 UI 结构。
+  const aiPanelOpen = await evalJS(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('button'))
+        .find((x) => (x.textContent || '').includes('AI \\u8f85\\u52a9'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `);
+  check('AI panel opens', aiPanelOpen === true);
+  await sleep(900);
+
+  const vpEntry = await evalJS(`!!document.querySelector('[data-vp-entry]')`);
+  check('「照样子找」entry present in AI panel', vpEntry === true);
+
+  const vpClicked = await evalJS(`
+    (() => {
+      const b = document.querySelector('[data-vp-entry]');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `);
+  check('「照样子找」entry is clickable', vpClicked === true);
+  await sleep(1200);
+
+  const vp = await evalJS(`
+    (() => ({
+      panel: !!document.querySelector('[data-vp-panel]'),
+      aiClosed: !document.querySelector('[data-ai-panel]'),
+      refs: document.querySelectorAll('[data-vp-ref]').length,
+      refOn: document.querySelectorAll('[data-vp-ref-on="1"]').length,
+      labels: document.querySelectorAll('[data-vp-label]').length,
+      trial: !!document.querySelector('[data-vp-trial]'),
+      batch: !!document.querySelector('[data-vp-batch]'),
+    }))()
+  `);
+  check('「照样子找」panel opens (AI panel closes)', vp.panel === true && vp.aiClosed === true, JSON.stringify(vp));
+  check('reference picker lists labeled images', vp.refs >= 1, JSON.stringify(vp));
+  check('current image auto-picked as reference', vp.refOn >= 1, JSON.stringify(vp));
+  check('label picker rendered', vp.labels >= 1, JSON.stringify(vp));
+  check('trial + batch actions rendered', vp.trial === true && vp.batch === true, JSON.stringify(vp));
+
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await sleep(400);
+
   // ---- 10. delete a label: boxes fall back to unclassified, undo restores -
   // These icon buttons are display:none until their row is hovered, so hover the
   // parent row first, then re-measure the button before clicking it.

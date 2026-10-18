@@ -7,6 +7,7 @@ import {
   Loader2,
   MousePointerClick,
   RefreshCw,
+  ScanSearch,
   ShieldCheck,
   Sparkles,
   X,
@@ -32,6 +33,8 @@ import { Slider } from '@/components/ui/slider';
 interface AiDialogProps {
   open: boolean;
   onClose: () => void;
+  /** 切到「照样子找」面板（内置模型、不需要任何文件的那条路） */
+  onVp: () => void;
 }
 
 function formatSize(bytes: number): string {
@@ -44,7 +47,7 @@ function formatSize(bytes: number): string {
  * 模型状态卡 + 置信度 + 「标注当前图 / 一键标注全部」两个动作。
  * 首次打开才引导推理引擎，平时不占任何加载时间。
  */
-export function AiDialog({ open, onClose }: AiDialogProps) {
+export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
   const status = useAiStore((s) => s.status);
   const error = useAiStore((s) => s.error);
   const modelName = useAiStore((s) => s.modelName);
@@ -138,7 +141,7 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
       }}
     >
       {/* 加高上限 + 内部滚动：出错态下内容会变多，矮屏（笔记本 / 平板）不能顶出视口 */}
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[460px]">
+      <DialogContent data-ai-panel className="max-h-[88vh] overflow-y-auto sm:max-w-[460px]">
         <input
           ref={fileRef}
           type="file"
@@ -169,6 +172,31 @@ export function AiDialog({ open, onClose }: AiDialogProps) {
           <ShieldCheck className="size-[14px] flex-shrink-0" />
           全程在你的浏览器里本地推理，图片不会上传到任何服务器
         </div>
+
+        {/* 另一条 AI 链路：不需要用户准备任何文件，也不需要训练。
+            放在最上面而不是折叠里 —— 对多数人来说这才是真能用的那条路：
+            下面那条要自备 .onnx，而绝大多数人手上根本没有。
+            批量进行中禁用：那时候关掉这个面板会看不到进度、也没法中途停止。 */}
+        <button
+          type="button"
+          data-vp-entry
+          disabled={busy === 'batch'}
+          onClick={onVp}
+          className="flex w-full items-center gap-3 rounded-[16px] border border-primary/25 bg-primary/[0.05] px-3.5 py-3 text-left transition-colors hover:bg-primary/[0.09] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="flex size-[34px] flex-shrink-0 items-center justify-center rounded-[12px] bg-primary/10 text-primary">
+            <ScanSearch className="size-[17px]" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-caption font-bold text-ink-2">
+              照样子找 · 不用任何文件
+            </span>
+            <span className="mt-0.5 block text-micro leading-relaxed text-ink-3">
+              标好几张图之后，让工具照着样子把剩下的找出来（内置模型，不用训练）
+            </span>
+          </span>
+          <ChevronRight className="size-4 flex-shrink-0 text-ink-4" />
+        </button>
 
         {/* ===== 模型状态卡 ===== */}
         {status === 'booting' || status === 'loading' ? (

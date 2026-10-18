@@ -17,6 +17,7 @@ import { TopBar } from './TopBar';
 // 三个弹窗按需加载：不打开就不下载对应代码块（jszip / AI 面板等），
 // 打开时才挂载，装完的模块会留在内存里，之后秒开。
 const AiDialog = lazy(() => import('./AiDialog').then((m) => ({ default: m.AiDialog })));
+const VpDialog = lazy(() => import('./VpDialog').then((m) => ({ default: m.VpDialog })));
 const ExportDialog = lazy(() => import('./ExportDialog').then((m) => ({ default: m.ExportDialog })));
 const ShortcutsDialog = lazy(() =>
   import('./ShortcutsDialog').then((m) => ({ default: m.ShortcutsDialog })),
@@ -39,6 +40,8 @@ export function Editor() {
   const [exportOpen, setExportOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  /** 「照样子找」（内置 YOLOE 视觉提示）。与 AiDialog 并列的第二条 AI 链路 */
+  const [vpOpen, setVpOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   /** 正在解析「已标注数据集」（要读 txt、量尺寸，比普通导入慢） */
   const [importing, setImporting] = useState(false);
@@ -63,8 +66,8 @@ export function Editor() {
   };
 
   useEffect(() => {
-    modalRef.current = exportOpen || shortcutsOpen || aiOpen;
-  }, [exportOpen, shortcutsOpen, aiOpen]);
+    modalRef.current = exportOpen || shortcutsOpen || aiOpen || vpOpen;
+  }, [exportOpen, shortcutsOpen, aiOpen, vpOpen]);
 
   // ---------- 快捷键 ----------
   useEffect(() => {
@@ -468,7 +471,17 @@ export function Editor() {
         <ShortcutsDialog open onClose={() => setShortcutsOpen(false)} />
       </DialogMount>
       <DialogMount open={aiOpen}>
-        <AiDialog open onClose={() => setAiOpen(false)} />
+        <AiDialog
+          open
+          onClose={() => setAiOpen(false)}
+          onVp={() => {
+            setAiOpen(false);
+            setVpOpen(true);
+          }}
+        />
+      </DialogMount>
+      <DialogMount open={vpOpen}>
+        <VpDialog open onClose={() => setVpOpen(false)} />
       </DialogMount>
     </div>
   );

@@ -76,6 +76,15 @@ interface AiState {
   setClassName: (index: number, name: string) => void;
   /** 去掉一个候选框（在画布上点它）。不必为了一个错框把整批都放弃 */
   removeCandidate: (index: number) => void;
+  /**
+   * 由**别的链路**产出的候选框，交给画布走同一套「确认 / 剔除」流程。
+   *
+   * 为什么放在这里而不是各链路自己存一份：候选框在画布上只有一处渲染逻辑
+   * （`CanvasStage` 读 `aiStore.candidates`，底部状态条给「全部采纳 / 放弃」）。
+   * 「照样子找」（vpStore）产出的框语义完全一样 —— 都是「还没被采纳的建议」，
+   * 分两份状态的话画布要同时读两个来源，两边还会互相盖住。
+   */
+  setCandidates: (cands: readonly AiCandidate[], imageId: string) => void;
   runCurrent: () => Promise<void>;
   /** 批量跑：empty=只跑还没有任何框的图；all=所有图都跑（已有框的图会追加） */
   runBatch: (scope?: 'empty' | 'all') => Promise<void>;
@@ -190,6 +199,14 @@ export const useAiStore = create<AiState>((set, get) => {
       // 不记的话「刷新后回 0.25」会让同一批图的标注结果前后不一致，用户很难自己反应过来。
       const name = get().modelName;
       if (name) saveConf(name, v);
+    },
+
+    setCandidates: (cands, imageId) => {
+      set({
+        candidates: cands.slice(),
+        // 空候选不要留下一个指向某张图的空状态条
+        candidatesImageId: cands.length > 0 ? imageId : null,
+      });
     },
 
     removeCandidate: (index) => {
