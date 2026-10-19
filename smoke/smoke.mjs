@@ -521,76 +521,33 @@ try {
   check('batch scope toggle rendered (仅未标注 / 全部重跑)', vp.scopes === 2, JSON.stringify(vp));
   check('batch copy says it will not write annotations directly', vp.batchCopy === true, JSON.stringify(vp));
 
-  // ---- 9c. 引擎切换（YOLOE 20MB / DINOv2 85MB）-----------------------------
-  // 两条链路的原理不同、擅长的场景不同，界面上并列摆出来让用户自己比。
-  // 这里验证三件事：两个选项都在、默认是 YOLOE、**切换本身不会触发下载**
-  // （模型是点了动作按钮才下的，切个引擎就偷偷下 85MB 是不可接受的）。
+  // ---- 9c. 引擎切换已移除（2026-10-19）-------------------------------------
+  // 面板曾经并列两条引擎（YOLOE / DINOv2）。DINOv2 在真实截图上被证明是
+  // **原理性天花板**：patch 固定 14px、输入固定 518，1366x768 图里 55px 的目标
+  // 只占 1.05 个 patch → 窗口退化成 1×1、召回 0，还吐几十个乱框。调阈值和换参考图
+  // 都救不回来，于是连同 85MB 模型一起删掉。
   //
-  // 注意：DINOv2 的**分辨率守卫**不在这里测。夹具是 400x300 的色块图，
-  // 守卫线是 42/gain ≈ 32px，而本用例画的框远大于它 —— 硬造一个小框就得
-  // 依赖画布缩放比，会变成 flaky。守卫的算术由 test/parse.test.mjs 钉住
-  // （10 条断言，含边界 110/111px），端到端行为在真实截图上另测。
-  const eng = await evalJS(`
+  // 这里钉住「删干净了」：不该再有引擎切换按钮，也不该再出现第二套阈值语义
+  // （「匹配严格度」是 DINOv2 的 z 值口径），面板里更不该残留 DINOv2 文案。
+  const engGone = await evalJS(`
     (() => {
-      const btns = Array.from(document.querySelectorAll('[data-vp-engine]'));
-      return {
-        count: btns.length,
-        ids: btns.map((b) => b.getAttribute('data-vp-engine')),
-        onIds: btns.filter((b) => b.getAttribute('data-vp-engine-on') === '1')
-          .map((b) => b.getAttribute('data-vp-engine')),
-        enabled: btns.every((b) => b.disabled === false),
-      };
-    })()
-  `);
-  check('both engines are offered', eng.count === 2 && eng.ids.join(',') === 'yoloe,dino', JSON.stringify(eng));
-  check('YOLOE is the default engine', eng.onIds.length === 1 && eng.onIds[0] === 'yoloe', JSON.stringify(eng));
-
-  const switched = await evalJS(`
-    (() => {
-      const d = document.querySelector('[data-vp-engine="dino"]');
-      if (!d || d.disabled) return false;
-      d.click();
-      return true;
-    })()
-  `);
-  await sleep(600);
-  const afterSwitch = await evalJS(`
-    (() => {
-      const btns = Array.from(document.querySelectorAll('[data-vp-engine]'));
       const panel = document.querySelector('[data-vp-panel]');
       const text = panel ? panel.innerText : '';
-      const trial = document.querySelector('[data-vp-trial]');
       return {
-        onIds: btns.filter((b) => b.getAttribute('data-vp-engine-on') === '1')
-          .map((b) => b.getAttribute('data-vp-engine')),
-        hasStrictness: text.includes('匹配严格度'),
-        hasConfidence: text.includes('置信度阈值'),
-        trialEnabled: !!trial && trial.disabled === false,
-        downloading: text.includes('正在准备内置模型'),
+        engineBtns: document.querySelectorAll('[data-vp-engine]').length,
+        hasStrictness: text.includes('\\u5339\\u914d\\u4e25\\u683c\\u5ea6'),
+        hasConfidence: text.includes('\\u7f6e\\u4fe1\\u5ea6\\u9608\\u503c'),
+        hasDino: text.includes('DINOv2'),
       };
     })()
   `);
-  check('switching to DINOv2 flips the engine state', switched === true && afterSwitch.onIds[0] === 'dino', JSON.stringify(afterSwitch));
+  check('engine switch is gone (single built-in model now)', engGone.engineBtns === 0, JSON.stringify(engGone));
   check(
-    'threshold card switches semantics (strictness, not confidence)',
-    afterSwitch.hasStrictness === true && afterSwitch.hasConfidence === false,
-    JSON.stringify(afterSwitch),
+    'only one threshold semantics remains (confidence)',
+    engGone.hasConfidence === true && engGone.hasStrictness === false,
+    JSON.stringify(engGone),
   );
-  check(
-    'switching engine does NOT start a download',
-    afterSwitch.downloading === false && afterSwitch.trialEnabled === true,
-    JSON.stringify(afterSwitch),
-  );
-
-  // 切回默认，免得影响后面的用例
-  await evalJS(`
-    (() => {
-      const y = document.querySelector('[data-vp-engine="yoloe"]');
-      if (y) y.click();
-      return !!y;
-    })()
-  `);
-  await sleep(400);
+  check('no DINOv2 copy left in the panel', engGone.hasDino === false, JSON.stringify(engGone));
 
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });

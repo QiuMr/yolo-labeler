@@ -14,9 +14,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { useVpStore, VP_ENGINES, modelMbOf } from '../store/vpStore';
+import { useVpStore, VP_MODEL } from '../store/vpStore';
 import { useAiStore } from '../store/aiStore';
-import { percentFromZ, zFromPercent, dinoFeasibility } from '../ai/dinoPrompt';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -34,7 +33,7 @@ interface VpDialogProps {
 }
 
 /**
- * 「照样子找」面板 —— 内置两条引擎：YOLOE 视觉提示 / DINOv2 特征匹配。
+ * 「照样子找」面板 —— 内置 YOLOE 视觉提示。
  *
  * 与「AI 辅助标注」并列的第二条 AI 链路，产品上最大的差别是：
  * **不需要用户准备任何文件**（模型随工具内置），而且**不需要训练**。
@@ -43,14 +42,8 @@ interface VpDialogProps {
  * 界面刻意把「选参考图」放在最前面而不是塞进设置里：实测决定效果的第一因素
  * 就是**选哪张参考图**（同一批图里 F1 从 0.000 到 0.750 都有），
  * 而「多选几张」几乎没用（1 张 0.704 → 5 张 0.712）。这两件事必须让用户看得见。
- *
- * DINOv2 那条额外带**分辨率守卫**（见下面的 guardText）：它有个硬前提 ——
- * 目标在 518 输入上要占够 patch，小目标会让它退化成「输出一堆乱框」。
- * 与其让用户拿到垃圾结果，不如把原因和具体像素数字讲清楚。
  */
 export function VpDialog({ open, onClose }: VpDialogProps) {
-  const engine = useVpStore((s) => s.engine);
-  const setEngine = useVpStore((s) => s.setEngine);
   const status = useVpStore((s) => s.status);
   const error = useVpStore((s) => s.error);
   const progress = useVpStore((s) => s.progress);
@@ -112,30 +105,9 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
     return labels.filter((l) => ids.has(l.id));
   }, [labeled, refImageIds, labels]);
 
-  const isDino = engine === 'dino';
+  const guardText = promptWarn;
 
-  /**
-   * DINOv2 的分辨率守卫 —— **点按钮之前**能算的那部分。
-   *
-   * 尺寸是懒测量的（store 里的 width/height 可能还是 0），所以这里算不出来就先不提示；
-   * `buildPrompt` 拿到真实 bitmap 后还会再拦一次，那次一定拦得住。
-   * 有这一步的意义：别让用户先把 85MB 模型下下来，再告诉他「你这个目标太小用不了」。
-   */
-  const dinoGuard = useMemo(() => {
-    if (!isDino || !labelId) return null;
-    for (const img of labeled) {
-      if (!refImageIds.includes(img.id)) continue;
-      if (!(img.width > 0 && img.height > 0)) continue;
-      const boxes = img.annotations.filter((a) => a.labelId === labelId).map((a) => a.rect);
-      if (boxes.length === 0) continue;
-      const f = dinoFeasibility(img.width, img.height, boxes);
-      return f.ok ? null : f;
-    }
-    return null;
-  }, [isDino, labelId, labeled, refImageIds]);
-  const guardText = promptWarn || dinoGuard?.reason || '';
-
-  const modelMb = modelMbOf(engine);
+  const modelMb = VP_MODEL.mb;
   const ready = status === 'ready';
   const loading = status === 'loading';
   const working = busy !== 'none';
@@ -182,47 +154,17 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           不用准备任何文件，也不用训练 · 全程本地推理
         </div>
 
-        {/* ===== 引擎选择 =====
-            两条链路的**原理完全不同**（一个是被训练过的检测器、一个是拿特征现算的匹配），
-            擅长的场景也不同，所以并列摆出来让用户拿自己的图去比 ——
-            而不是替用户选一条、把另一条藏起来。 */}
-        <div>
-          <div className="flex rounded-[14px] border border-border bg-card p-[3px] [box-shadow:var(--shadow-xs)]">
-            {VP_ENGINES.map((e) => {
-              const on = engine === e.id;
-              return (
-                <button
-                  key={e.id}
-                  type="button"
-                  data-vp-engine={e.id}
-                  data-vp-engine-on={on ? '1' : '0'}
-                  onClick={() => setEngine(e.id)}
-                  disabled={working || loading}
-                  className={`flex-1 rounded-[10px] px-2 py-[6px] text-caption font-semibold transition-colors disabled:opacity-50 ${
-                    on ? 'bg-primary text-white' : 'text-ink-3 hover:text-ink-2'
-                  }`}
-                >
-                  {e.name}
-                  <span className={`ml-1 text-micro font-normal ${on ? 'text-white/70' : 'text-ink-4'}`}>
-                    {e.mb}MB
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <p className="mt-1.5 text-micro leading-relaxed text-ink-4">
-            {VP_ENGINES.find((e) => e.id === engine)?.tagline}
-            {isDino
-              ? ' · 只在目标够大时有效，小目标会输出一堆乱框'
-              : ' · 参考图越多越稳，小目标和大目标都能用'}
-          </p>
-        </div>
+        {/* ===== 这条链路是什么 =====
+            只留一条引擎，所以不再需要「并列摆出来让用户自己比」。
+            一句话说清它是什么、什么图好用，就够了。 */}
+        <p className="text-micro leading-relaxed text-ink-4">
+          {VP_MODEL.name} · {VP_MODEL.tagline}
+          <span> · 参考图越多越稳，小目标和大目标都能用</span>
+        </p>
 
-        {/* ===== 分辨率守卫 =====
-            这一段是**事故的产物**，不是锦上添花：2026-10-19 实测发现，
-            目标在 518 输入上只占 1 个 patch 时（例如 1366x768 图里 55px 的史莱姆），
-            DINOv2 召回为 0 却会吐出 30+ 个乱框 —— 12 个最高分的框里有 8 个与真值零重叠。
-            与其让用户拿到一堆垃圾框，不如把原因和具体数字讲清楚。 */}
+        {/* ===== 编码失败提示 =====
+            参考图打不开、提示编码失败时，原因写在这里而不是只弹一条 toast ——
+            用户回头看不到「为什么不让跑」，只会以为功能坏了。 */}
         {guardText ? (
           <div
             data-vp-warn
@@ -232,7 +174,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               <AlertTriangle className="mt-[1px] size-[15px] flex-shrink-0 text-amber-600" />
               <div className="min-w-0 flex-1">
                 <div className="text-body font-bold text-amber-700">
-                  DINOv2 用不了这批框
+                  这次没法照样子找
                 </div>
                 <div className="mt-1 text-caption leading-relaxed text-ink-3">{guardText}</div>
               </div>
@@ -297,7 +239,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           <div className="rounded-[16px] border border-line bg-muted/50 px-3.5 py-3">
             <p className="text-micro leading-relaxed text-ink-3">
               内置模型会在开始前自动下载（约 {modelMb} MB，只有第一次需要），
-              下载一次之后反复可用。两条链路各自缓存，切换回来不用重下。
+              下载一次之后反复可用，刷新页面也不用重下。
             </p>
           </div>
         )}
@@ -371,9 +313,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
                 </div>
                 <p className="mt-2 text-micro leading-relaxed text-ink-4">
                   <span className="font-semibold text-ink-3">1 张就够</span>
-                  {isDino
-                    ? '，而且标得越多反而可能越差（例子多了原型就杂）。关键是这张图要和你想标的图'
-                    : '，多选几乎没用（实测 1 张和 5 张效果持平）。关键是这张图要和你想标的图'}
+                  ，多选几乎没用（实测 1 张和 5 张效果持平）。关键是这张图要和你想标的图
                   <span className="font-semibold text-ink-3">长得像</span>
                   —— 换地图、换怪物款式就换一张。
                 </p>
@@ -421,34 +361,28 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
         ) : null}
 
         {/* ===== 阈值 =====
-            两条链路的分数**不是一回事**：YOLOE 是模型输出的置信度（0~1），
-            DINOv2 是「高于本图均值几个标准差」。所以控件的范围、显示方式、
-            说明文字都跟着引擎换 —— 用一个数字糊弄过去只会让用户调不明白。 */}
+            模型输出的是置信度（0~1）。范围取 5%~90% 而不是 0~100%：
+            调到 0 会满屏乱框、调到 100 永远为空，两端都是无意义的死区。 */}
         <div className="rounded-[16px] border border-line bg-card px-4 py-3.5 [box-shadow:var(--shadow-xs)]">
           <div className="flex items-center justify-between">
-            <span className="text-caption font-bold text-ink-2">
-              {isDino ? '匹配严格度' : '置信度阈值'}
-            </span>
+            <span className="text-caption font-bold text-ink-2">置信度阈值</span>
             <span className="num rounded-[8px] bg-muted px-1.5 py-[2px] text-micro font-bold text-primary">
-              {isDino ? conf.toFixed(2) : `${Math.round(conf * 100)}%`}
+              {Math.round(conf * 100)}%
             </span>
           </div>
           <Slider
             className="mt-3"
-            value={[isDino ? Math.round(percentFromZ(conf) * 100) : Math.round(conf * 100)]}
-            min={isDino ? 0 : 5}
-            max={isDino ? 100 : 90}
+            value={[Math.round(conf * 100)]}
+            min={5}
+            max={90}
             step={5}
             onValueChange={(v) => {
-              const raw = v[0] ?? 0;
-              setConf(isDino ? zFromPercent(raw / 100) : raw / 100);
+              setConf((v[0] ?? 0) / 100);
             }}
             disabled={working}
           />
           <p className="mt-2 text-micro leading-relaxed text-ink-4">
-            {isDino
-              ? '数值 = 高于本图平均水平几个标准差 · 默认 2.00 · 这个值会记住'
-              : '调低能找出更多目标，调高则更精准 · 这个值会记住，下次不用重调'}
+            调低能找出更多目标，调高则更精准 · 这个值会记住，下次不用重调
           </p>
         </div>
 

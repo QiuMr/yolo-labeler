@@ -8,7 +8,6 @@ import { parseClassNames, classNameFor } from '../.tmp/ai/cocoNames.js';
 import { snapRectToEdges } from '../.tmp/utils/geometry.js';
 import { buildAiAnnotations, iouOf, AI_DEDUP_IOU } from '../.tmp/utils/aiBoxes.js';
 import { parseImageSize } from '../.tmp/utils/imageSize.js';
-import { dinoLetterbox, gridSizeOf, dinoFeasibility } from '../.tmp/ai/dinoGeometry.js';
 import {
   parseClassesTxt,
   parseDataYamlNames,
@@ -535,47 +534,13 @@ check(
   'in',
 );
 
-/* ---------- DINOv2 分辨率守卫（dinoGeometry） ----------
-   2026-10-19 的事故：合成基准（320x320 图、72px 精灵 → 目标占 8.3 个 patch）上
-   k=1 的 F1 是 0.750，于是把 DINOv2 接进了「照样子找」。但真实截图
-   （1366x768、目标 55px → 只占 1.05 个 patch）上召回是 0，还吐了 31 个乱框。
-   根因全在这几个数字上，必须有回归测试钉住 —— 别再让「合成数据上的好成绩」
-   悄悄外推到真实图片。 */
-const LB = dinoLetterbox(1366, 768);
-check(
-  '1366x768 → letterbox 参数（gain/w/h/left/top）',
-  [Number(LB.gain.toFixed(6)), LB.w, LB.h, LB.left, LB.top],
-  [0.379209, 518, 291, 0, 113],
-);
-check('参考框 55px 落到网格上只有 1x1 个 patch', gridSizeOf(55, 55, LB.gain, 1), [1, 1]);
-
-const feasSmall = dinoFeasibility(1366, 768, [rect(34, 520, 55, 55)]);
-check(
-  '小目标被守卫拦下（真实截图里的史莱姆）',
-  [feasSmall.ok, feasSmall.pw, feasSmall.ph],
-  [false, 1, 1],
-);
-check('守卫算出原图上的最小可用边长', Math.ceil(feasSmall.needPx), 111);
-check('拒绝文案指向 YOLOE', feasSmall.reason.includes('YOLOE'), true);
-
-check('刚好够大就放行（111px）', dinoFeasibility(1366, 768, [rect(0, 0, 111, 111)]).ok, true);
-check('差一点点就拦下（110px）', dinoFeasibility(1366, 768, [rect(0, 0, 110, 110)]).ok, false);
-check(
-  '合成基准那种尺寸当然放行（320 图 / 72px 精灵）',
-  dinoFeasibility(320, 320, [rect(40, 40, 72, 72)]).ok,
-  true,
-);
-check(
-  '多框取平均尺寸（200 与 100 → 150px，放行）',
-  dinoFeasibility(1366, 768, [rect(0, 0, 200, 200), rect(0, 0, 100, 100)]).ok,
-  true,
-);
-check(
-  '尺寸未知时不报错也不放行（懒测量还没填）',
-  [dinoFeasibility(0, 0, [rect(0, 0, 9, 9)]).ok, dinoFeasibility(0, 0, [rect(0, 0, 9, 9)]).reason],
-  [false, ''],
-);
-check('没有框时不报错也不放行', dinoFeasibility(100, 100, []).ok, false);
+/* ---------- （已删除）DINOv2 分辨率守卫 ----------
+   这里原本钉着 dinoGeometry 的一组回归断言：合成基准（320x320 图、72px 精灵 →
+   目标占 8.3 个 patch）上 k=1 的 F1 是 0.750，于是 DINOv2 被接进了「照样子找」；
+   但真实截图（1366x768、目标 55px → 只占 1.05 个 patch）上召回是 0，还吐了 31 个乱框。
+   结论是**原理性天花板**：patch 固定 14px、输入固定 518，小目标就是喂不进去，
+   调阈值和换参考图都救不回来。所以 2026-10-19 把这条引擎整个删掉了
+   （连同 85MB 模型），断言也随之删除 —— 留着会守着一份不存在的源码。 */
 
 // ==================== 批量汇总 / 异常标记 ====================
 // 这一段守的是「跑完之后用户知道该看哪几张」。阈值写错不会报错，

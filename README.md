@@ -146,8 +146,8 @@ npm run dev        # 开发
 npm run build      # 类型检查（tsc -b）+ 打包到 dist/
 npm run preview    # 预览打包结果
 npm run lint       # oxlint
-npm run test:unit  # 单元测试：129 项断言（解析 / 元数据 / 图片尺寸 / AI 落框与去重 纯函数）
-npm run smoke      # 端到端冒烟：Edge 无头 + CDP 跑真实页面，29 项
+npm run test:unit  # 单元测试：158 项断言（解析 / 元数据 / 图片尺寸 / AI 落框与去重 纯函数）
+npm run smoke      # 端到端冒烟：Edge 无头 + CDP 跑真实页面，43 项
 npm run share      # 生成干净的发布包 yolo-labeler-pages/（非 CI 部署用）
 ```
 
@@ -251,7 +251,8 @@ switch / input / label / slider / sonner。
 5. **跨视口拖拽排序不自动滚动**（拖拽时浏览器不给 `dragOver` 滚动事件）
 6. **SAM 嵌入缓存只留最近 24 张图**：超过后回到旧图点选会重新编码（1~3s）。
    放大缓存的代价是内存（每张约 4MB），暂按 24 张取舍
-7. `public/` 里的 MobileSAM 模型（42MB）随站点打包 —— 可改为让用户手动选文件
+7. `public/` 里的内置模型（MobileSAM 约 44MB + YOLOE 视觉提示 20MB）随站点打包，
+   但都是**点按钮才下载**，不进首屏 —— 想再省可以改为让用户手动选文件
 8. **不从 `classes.txt` / `data.yaml` 导入类名** —— 这是**刻意不做**的：
    目标用户是不写代码的人，让他去「准备一个文件」等于把「改个名字」
    升级成「先理解一种文件格式」。AI 面板里的「类别名」就地改名已经覆盖这个需求
