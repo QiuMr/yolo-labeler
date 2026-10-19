@@ -67,6 +67,24 @@ export default defineConfig({
     },
     watch: {
       usePolling: true,
+      /**
+       * 这些目录一律不监视。
+       *
+       * Vite 默认只忽略 `.git/` 与 `node_modules/`，而 dev server 是**看到任何文件变动
+       * 就给页面发 full-reload**（对不在模块图里的文件也一样）。本项目根目录下有四个
+       * 高频写入的目录，全都不该触发重载：
+       *
+       * · `.tmp/`     —— 测试中间产物；**无头浏览器的用户目录也在这里**（`.edge-profile-dev/`），
+       *                  Edge 启动时会往里写一批 `.html`。实测这会在端到端测试跑到一半时
+       *                  把被测页面整页重载，store 归零 → 表现为「批量按钮点不动」这类假失败，
+       *                  而且**时序相关**（Edge 组件初始化早于页面连接就没事），极难定位
+       * · `dist/`     —— 构建产物，dev 不用它
+       * · `smoke/`    —— 冒烟测试的 profile 与日志
+       * · `yolo-labeler-pages/` —— `npm run share` 的输出
+       *
+       * 只影响 dev server，不影响构建。
+       */
+      ignored: ['**/.tmp/**', '**/dist/**', '**/smoke/**', '**/yolo-labeler-pages/**'],
     },
   },
 })

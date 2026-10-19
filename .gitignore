@@ -13,10 +13,11 @@ yolo-labeler-pages
 .tmp
 
 # ── 无头浏览器测试 ────────────────────────────────────
-# npm run smoke 会自己重建这两份 Edge 用户目录（各有 50+ MB）
+# npm run smoke 会自己重建这份 Edge 用户目录（50+ MB）
 smoke/.edge-profile/
-smoke/.repro-profile/
+# 跑测试时长的产物：日志，以及 repro.mjs 写的调试截图（不是源码，随时可重跑得到）
 smoke/*.log
+smoke/repro-shot.png
 !smoke/.gitkeep
 
 # ── 日志与打包残留 ────────────────────────────────────

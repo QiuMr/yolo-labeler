@@ -207,7 +207,7 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
             <span className="mt-0.5 block text-micro leading-relaxed text-ink-3">
               {pendingImages > 0
                 ? `上次批量的结果还在等你确认 —— 点这里看汇总，或直接一键采纳`
-                : '标好几张图之后，让工具照着样子把剩下的找出来 · 内置两种引擎，不用训练'}
+                : '标好几张图之后，让工具照着样子把剩下的找出来 · 内置模型，不用训练'}
             </span>
           </span>
           <ChevronRight className="size-4 flex-shrink-0 text-ink-4" />
@@ -364,7 +364,7 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
         {/* 手上没有 .onnx，是这里最常见的死路：面板只写「拖入模型」，
             可绝大多数人根本没有 onnx 文件，看到这句只会以为
             「AI 功能得自己先准备模型」，然后直接放弃这个功能。
-            而画布左上角的「点击标注」用的是**随工具内置**的模型（42MB 随站点发），
+            而画布左上角的「点击标注」用的是**随工具内置**的模型（约 44MB，随站点打包），
             不需要用户提供任何文件 —— 这个事实必须在这里说出来，
             否则一条本来开箱即用的链路会被彻底埋掉。
             按钮直接帮他进入那个模式，省掉「回去找那个小按钮」的一步。 */}
