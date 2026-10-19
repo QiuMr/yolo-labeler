@@ -162,7 +162,7 @@ npm run build      # 类型检查（tsc -b）+ 打包到 dist/
 npm run preview    # 预览打包结果
 npm run lint       # oxlint
 npm run test:unit  # 单元测试：158 项断言（解析 / 元数据 / 图片尺寸 / AI 落框与去重 纯函数）
-npm run smoke      # 端到端冒烟：Edge 无头 + CDP 跑真实页面，43 项
+npm run smoke      # 端到端冒烟：Edge 无头 + CDP 跑真实页面，48 项
 npm run share      # 生成干净的发布包 yolo-labeler-pages/（非 CI 部署用）
 ```
 

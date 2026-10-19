@@ -467,6 +467,29 @@ try {
   check('AI panel opens', aiPanelOpen === true);
   await sleep(900);
 
+  // 两个 AI 面板共用同一套分栏（固定头部 / 滚动中段 / 固定动作条）。
+  // 这里只验证「结构对上了」—— 真正的滚动行为在 9b2 用压矮视口的方式测。
+  const aiSplit = await evalJS(`
+    (() => {
+      const panel = document.querySelector('[data-ai-panel]');
+      const head = document.querySelector('[data-ai-head]');
+      const body = document.querySelector('[data-ai-body]');
+      const foot = document.querySelector('[data-ai-foot]');
+      if (!panel || !head || !body || !foot) return null;
+      const r = (el) => el.getBoundingClientRect();
+      return {
+        panelOverflowY: getComputedStyle(panel).overflowY,
+        bodyOverflowY: getComputedStyle(body).overflowY,
+        stacked: r(head).bottom <= r(body).top + 1 && r(body).bottom <= r(foot).top + 1,
+      };
+    })()
+  `);
+  check(
+    'AI panel uses the same 3-zone layout (fixed head / scrolling middle / fixed foot)',
+    aiSplit?.panelOverflowY === 'hidden' && aiSplit?.bodyOverflowY === 'auto' && aiSplit?.stacked === true,
+    JSON.stringify(aiSplit),
+  );
+
   const vpEntry = await evalJS(`!!document.querySelector('[data-vp-entry]')`);
   check('「照样子找」entry present in AI panel', vpEntry === true);
 
@@ -520,6 +543,69 @@ try {
   );
   check('batch scope toggle rendered (仅未标注 / 全部重跑)', vp.scopes === 2, JSON.stringify(vp));
   check('batch copy says it will not write annotations directly', vp.batchCopy === true, JSON.stringify(vp));
+
+  // ---- 9b2. 面板分栏：标题与动作条固定，只有中段滚 --------------------------
+  // 用户报的问题：整个弹窗挂 overflow-y-auto，于是标题跟着内容滚走、
+  // 滚动条紧贴在 20px 圆角上、主按钮「先试标一张」落在折线以下。
+  // 现在拆成 固定头部 / 滚动中段 / 固定动作条 三段。
+  //
+  // 断言**不能只看类名** —— 那只能证明「我写了这个类」，证明不了「固定住了」。
+  // 所以这里把视口压矮（1440x560）把中段真的逼出滚动，再验证：
+  // 滚的是中段、标题纹丝不动、主按钮不用滚动就在视口内。
+  // 用完必须还原成 1440x900 —— 后面第 10 节是按坐标点击的，矮视口会让坐标全错。
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 560,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await sleep(500);
+
+  const split = await evalJS(`
+    (() => {
+      const panel = document.querySelector('[data-vp-panel]');
+      const head = document.querySelector('[data-vp-head]');
+      const body = document.querySelector('[data-vp-body]');
+      const foot = document.querySelector('[data-vp-foot]');
+      const cta = document.querySelector('[data-vp-trial]');
+      if (!panel || !head || !body || !foot || !cta) return null;
+      const r = (el) => el.getBoundingClientRect();
+      const before = { headTop: r(head).top, ctaBottom: r(cta).bottom, panel: r(panel) };
+      const scrolls = body.scrollHeight > body.clientHeight + 1;
+      body.scrollTop = body.scrollHeight; // 滚到底
+      const after = { headTop: r(head).top, ctaBottom: r(cta).bottom, panel: r(panel) };
+      return {
+        panelOverflowY: getComputedStyle(panel).overflowY,
+        bodyOverflowY: getComputedStyle(body).overflowY,
+        scrolls,
+        headPinned: Math.abs(after.headTop - before.headTop) < 1,
+        ctaPinned: Math.abs(after.ctaBottom - before.ctaBottom) < 1,
+        ctaInView:
+          after.ctaBottom <= after.panel.bottom + 1 && after.ctaBottom > after.panel.top,
+        stacked: r(head).bottom <= r(body).top + 1 && r(body).bottom <= r(foot).top + 1,
+      };
+    })()
+  `);
+  check(
+    'panel itself never scrolls (only its middle section does)',
+    split?.panelOverflowY === 'hidden' && split?.bodyOverflowY === 'auto',
+    JSON.stringify(split),
+  );
+  check('middle section really scrolls on a short viewport', split?.scrolls === true, JSON.stringify(split));
+  check('title stays put while the middle scrolls', split?.headPinned === true, JSON.stringify(split));
+  check(
+    'primary action stays in view without scrolling',
+    split?.ctaPinned === true && split?.ctaInView === true && split?.stacked === true,
+    JSON.stringify(split),
+  );
+
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await sleep(400);
 
   // ---- 9c. 引擎切换已移除（2026-10-19）-------------------------------------
   // 面板曾经并列两条引擎（YOLOE / DINOv2）。DINOv2 在真实截图上被证明是
