@@ -7,6 +7,29 @@ import {
   type OrtTensorOut,
 } from './ortRuntime';
 import type { VpDetection, VpLetterbox } from './visualPrompt';
+import {
+  DINO_SIZE,
+  DINO_PATCH,
+  DINO_GRID,
+  DINO_DIM,
+  dinoLetterbox,
+  gridSizeOf,
+  dinoFeasibility,
+} from './dinoGeometry';
+
+// 几何算术住在 dinoGeometry（无推理依赖，可单测）。这里转发一遍，
+// 免得既有调用方为了几个常量多记一个模块名。
+export {
+  DINO_SIZE,
+  DINO_PATCH,
+  DINO_GRID,
+  DINO_DIM,
+  dinoLetterbox,
+  gridSizeOf,
+  dinoFeasibility,
+  DINO_MIN_OBJ_PATCH,
+} from './dinoGeometry';
+export type { DinoFeasibility, DinoLetterbox } from './dinoGeometry';
 
 /**
  * DINOv2 特征匹配 —— 「照样子找」的第二种引擎。
@@ -18,18 +41,30 @@ import type { VpDetection, VpLetterbox } from './visualPrompt';
  *    参考框内的 patch 特征当模板，在目标图的 patch 特征上滑动找相似的块。
  *
  * 为什么接它：像素模板匹配（NCC）在「同类不同个体」上只能靠堆参考图线性爬，
- * 而 DINOv2 是自监督语义特征，**一张参考图就能跨个体**。同一批图、同一评测口径下实测：
+ * 而 DINOv2 是自监督语义特征，理论上**一张参考图就能跨个体**。
+ * 在**合成基准**（`.tmp/labeler-proto/stress_ncc.py` 的 sprite 生成器：
+ * 320x320 图、72px 精灵）上，同一评测口径下实测：
  *
  *   参考图数 k │ 1      │ 4      │ 16
  *   NCC        │ 0.083  │ 0.292  │ 0.708   ← 召回（精度恒 1.000）
  *   DINOv2     │ 0.750  │ 0.833  │ 1.000   ← 召回（精度 0.750 / 0.606 / 0.387）
  *
- *   F1 对比：k=1 时 0.750 vs 0.153（DINOv2 赢 5 倍）；
- *            k=16 时 0.558 vs 0.829（NCC 反超 —— 堆够参考图它也能到高精度）。
- *   两条路互补：**参考少用 DINOv2，参考多（16+）用 NCC 更准**。
- *   （完整实验在 `.tmp/dinov2/`，报告 `dino_report3.txt`）
+ *   （完整实验在 `.tmp/dinov2/dino_report3.txt`）
  *
- * 三个**必须照做**的实现要点，都是实测踩出来的：
+ * ⚠️ **上面这张表只在「目标占足够多 patch」时成立，不能外推。**
+ * 2026-10-19 在真实截图（冒险岛 1366x768、目标 55px）上实测：
+ *   · 整图 letterbox 后 gain=0.379，目标只占 **1.05 个 patch** → 匹配窗口退化成 1x1
+ *   · 召回 **0.000**（3 个真值一个都没找到）；34 个候选框里分数最高的 12 个有 8 个
+ *     与真值**零重叠**（落在铁轨/梯子/石墙上）
+ *   · 真值处的平滑余弦 0.848~0.888，**低于背景 p99 的 0.894** → 任何阈值都救不了
+ *   · 按原始分辨率切片（目标 3.93 个 patch）→ 召回回到 **1.000**
+ * 根因是**分辨率算术**：patch 固定 14px、输入固定 518，所以目标在原图上的
+ * 最小可用尺寸 = 3*14/gain。合成基准里是 8.3 个 patch/目标，真实截图只有 1.05 ——
+ * 差 5.6 倍，而这条边界在合成数据上**完全看不见**。
+ * 因此本模块带一个 `dinoFeasibility` 守卫：目标太小就明确拒绝，
+ * 而不是吐一堆乱框（详见该函数的注释）。
+ *
+ * 三个**必须照做**的实现要点，都是在「目标够大」的前提下实测踩出来的：
  *  1. **逐 patch 分类不够，要按窗口聚合**。单个 patch 语义很弱（ViT 感受野大），
  *     背景上零星几个 patch 撞高分就会成框 —— 实测正样本 p10 处背景误报率 17%。
  *     物体在特征图上是一**块**连续区域，所以在「与参考框同尺寸的窗口」上求均值，
@@ -39,14 +74,12 @@ import type { VpDetection, VpLetterbox } from './visualPrompt';
  *     归一化成「高于本图均值几个标准差」之后，同一个阈值才跨图有效。
  *  3. **原型要用框内全部 patch，不要取均值**。均值把框内的结构多样性抹平了
  *     （实测均值原型 F1 0.394，全 patch 0.750）。
+ *
+ * 已知仍未解决的问题（诚实记录）：z 是**每图相对**阈值，所以输出框数并不取决于
+ * 「图里有没有目标」—— 实测拿目标图自己的背景 patch 当原型，z=2.0 时照样出 25 个框
+ * （真原型 34 个）。`MAX_PEAKS=20` 在 5 个尺度上常常全部撞满。守卫挡掉了最坏的一档，
+ * 但「输出量由上限而非内容决定」这个毛病还在。
  */
-
-/** 模型固定输入边长（14 × 37）。换模型必须同步改这三个常量 */
-export const DINO_SIZE = 518;
-export const DINO_PATCH = 14;
-export const DINO_GRID = DINO_SIZE / DINO_PATCH;
-/** patch 特征维度（ViT-S/14 的 hidden size） */
-export const DINO_DIM = 384;
 
 /**
  * 多尺度：同时缩放「原型取样区域」与「匹配窗口」。
@@ -157,20 +190,6 @@ function toFloat32(data: Float32Array | BigInt64Array): Float32Array {
   const out = new Float32Array(data.length);
   for (let i = 0; i < data.length; i += 1) out[i] = Number(data[i]);
   return out;
-}
-
-/** 与 visualPrompt 的 letterbox 同规则，只是边长不同（用 floor 保持与 Python 对拍一致） */
-export function dinoLetterbox(imgW: number, imgH: number): VpLetterbox {
-  const gain = Math.min(DINO_SIZE / imgW, DINO_SIZE / imgH);
-  const w = Math.max(1, Math.round(imgW * gain));
-  const h = Math.max(1, Math.round(imgH * gain));
-  return {
-    gain,
-    w,
-    h,
-    left: Math.floor((DINO_SIZE - w) / 2),
-    top: Math.floor((DINO_SIZE - h) / 2),
-  };
 }
 
 interface Peak {
@@ -377,18 +396,22 @@ export class DinoPromptDetector {
 
   /** 原图坐标的框 → 特征图上的 patch 尺寸（用于匹配窗口） */
   private gridSize(b: IRect, lb: VpLetterbox, scale: number): [number, number] {
-    const pw = Math.max(1, Math.round((b.width * scale * lb.gain) / DINO_PATCH));
-    const ph = Math.max(1, Math.round((b.height * scale * lb.gain) / DINO_PATCH));
-    return [pw, ph];
+    return gridSizeOf(b.width, b.height, lb.gain, scale);
   }
 
   /**
    * 编码参考：参考图 + 该图上的框 → 原型集合。
-   * 框为空时抛错 —— 没有原型必然什么也找不出来，早点说清楚比让用户等一轮更好。
+   *
+   * 两道前置检查，都是「早点说清楚比让用户等一轮拿到乱框更好」：
+   *  · 框为空 → 没有原型必然什么也找不出来
+   *  · 目标在特征网格上太小（见 `dinoFeasibility`）→ 窗口退化成 1x1，
+   *    实测这种尺寸下召回为 0、还吐几十个乱框。**宁可拒绝，也不要假装找到。**
    */
   async encodePrompt(bitmap: ImageBitmap, boxes: readonly IRect[]): Promise<DinoProto> {
     if (!this.session) throw new Error('模型未加载');
     if (boxes.length === 0) throw new Error('这张参考图上还没有框，先画一个再试');
+    const feas = dinoFeasibility(bitmap.width, bitmap.height, boxes);
+    if (!feas.ok) throw new Error(feas.reason);
     const { f, lb } = await this.features(bitmap);
 
     const groups = DINO_SCALES.map((s) => {

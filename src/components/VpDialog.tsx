@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useVpStore, VP_ENGINES, modelMbOf } from '../store/vpStore';
-import { percentFromZ, zFromPercent } from '../ai/dinoPrompt';
+import { percentFromZ, zFromPercent, dinoFeasibility } from '../ai/dinoPrompt';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -32,7 +32,7 @@ interface VpDialogProps {
 }
 
 /**
- * 「照样子找」面板 —— YOLOE 视觉提示。
+ * 「照样子找」面板 —— 内置两条引擎：YOLOE 视觉提示 / DINOv2 特征匹配。
  *
  * 与「AI 辅助标注」并列的第二条 AI 链路，产品上最大的差别是：
  * **不需要用户准备任何文件**（模型随工具内置），而且**不需要训练**。
@@ -41,6 +41,10 @@ interface VpDialogProps {
  * 界面刻意把「选参考图」放在最前面而不是塞进设置里：实测决定效果的第一因素
  * 就是**选哪张参考图**（同一批图里 F1 从 0.000 到 0.750 都有），
  * 而「多选几张」几乎没用（1 张 0.704 → 5 张 0.712）。这两件事必须让用户看得见。
+ *
+ * DINOv2 那条额外带**分辨率守卫**（见下面的 guardText）：它有个硬前提 ——
+ * 目标在 518 输入上要占够 patch，小目标会让它退化成「输出一堆乱框」。
+ * 与其让用户拿到垃圾结果，不如把原因和具体像素数字讲清楚。
  */
 export function VpDialog({ open, onClose }: VpDialogProps) {
   const engine = useVpStore((s) => s.engine);
@@ -55,6 +59,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
   const promptReady = useVpStore((s) => s.promptReady);
   const promptRefs = useVpStore((s) => s.promptRefs);
   const promptBoxes = useVpStore((s) => s.promptBoxes);
+  const promptWarn = useVpStore((s) => s.promptWarn);
   const conf = useVpStore((s) => s.conf);
   const busy = useVpStore((s) => s.busy);
   const batchDone = useVpStore((s) => s.batchDone);
@@ -99,6 +104,28 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
   }, [labeled, refImageIds, labels]);
 
   const isDino = engine === 'dino';
+
+  /**
+   * DINOv2 的分辨率守卫 —— **点按钮之前**能算的那部分。
+   *
+   * 尺寸是懒测量的（store 里的 width/height 可能还是 0），所以这里算不出来就先不提示；
+   * `buildPrompt` 拿到真实 bitmap 后还会再拦一次，那次一定拦得住。
+   * 有这一步的意义：别让用户先把 85MB 模型下下来，再告诉他「你这个目标太小用不了」。
+   */
+  const dinoGuard = useMemo(() => {
+    if (!isDino || !labelId) return null;
+    for (const img of labeled) {
+      if (!refImageIds.includes(img.id)) continue;
+      if (!(img.width > 0 && img.height > 0)) continue;
+      const boxes = img.annotations.filter((a) => a.labelId === labelId).map((a) => a.rect);
+      if (boxes.length === 0) continue;
+      const f = dinoFeasibility(img.width, img.height, boxes);
+      return f.ok ? null : f;
+    }
+    return null;
+  }, [isDino, labelId, labeled, refImageIds]);
+  const guardText = promptWarn || dinoGuard?.reason || '';
+
   const modelMb = modelMbOf(engine);
   const ready = status === 'ready';
   const loading = status === 'loading';
@@ -177,10 +204,32 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           <p className="mt-1.5 text-micro leading-relaxed text-ink-4">
             {VP_ENGINES.find((e) => e.id === engine)?.tagline}
             {isDino
-              ? ' · 参考图少（1~4 张）时更灵，多标几张反而可能变差'
-              : ' · 参考图越多越稳，适合真实照片与复杂场景'}
+              ? ' · 只在目标够大时有效，小目标会输出一堆乱框'
+              : ' · 参考图越多越稳，小目标和大目标都能用'}
           </p>
         </div>
+
+        {/* ===== 分辨率守卫 =====
+            这一段是**事故的产物**，不是锦上添花：2026-10-19 实测发现，
+            目标在 518 输入上只占 1 个 patch 时（例如 1366x768 图里 55px 的史莱姆），
+            DINOv2 召回为 0 却会吐出 30+ 个乱框 —— 12 个最高分的框里有 8 个与真值零重叠。
+            与其让用户拿到一堆垃圾框，不如把原因和具体数字讲清楚。 */}
+        {guardText ? (
+          <div
+            data-vp-warn
+            className="rounded-[16px] border border-amber-400/35 bg-amber-400/[0.09] px-3.5 py-3"
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-[1px] size-[15px] flex-shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <div className="text-body font-bold text-amber-700">
+                  DINOv2 用不了这批框
+                </div>
+                <div className="mt-1 text-caption leading-relaxed text-ink-3">{guardText}</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {/* ===== 模型状态 ===== */}
         {status === 'loading' ? (
@@ -314,7 +363,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
                 <p className="mt-2 text-micro leading-relaxed text-ink-4">
                   <span className="font-semibold text-ink-3">1 张就够</span>
                   {isDino
-                    ? '，而且标得越多反而可能越差（实测 1 张 F1 0.75、16 张掉到 0.56 —— 例子多了原型就杂）。关键是这张图要和你想标的图'
+                    ? '，而且标得越多反而可能越差（例子多了原型就杂）。关键是这张图要和你想标的图'
                     : '，多选几乎没用（实测 1 张和 5 张效果持平）。关键是这张图要和你想标的图'}
                   <span className="font-semibold text-ink-3">长得像</span>
                   —— 换地图、换怪物款式就换一张。
@@ -389,7 +438,7 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
           />
           <p className="mt-2 text-micro leading-relaxed text-ink-4">
             {isDino
-              ? '数值 = 高于本图平均水平几个标准差 · 实测 2.00 附近最平衡 · 这个值会记住'
+              ? '数值 = 高于本图平均水平几个标准差 · 默认 2.00 · 这个值会记住'
               : '调低能找出更多目标，调高则更精准 · 这个值会记住，下次不用重调'}
           </p>
         </div>
@@ -420,7 +469,13 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               onClick={() => {
                 // 等推理真正结束（含首次的模型下载）再关面板：
                 // 立刻关掉的话，用户在「下 20MB + 建会话」那 7~8 秒里看不到任何反馈，会以为没反应。
-                void runTrial().finally(onClose);
+                //
+                // 但**被守卫拦下时不能关**：那时没有任何框可看，原因（含具体像素数字）
+                // 就写在面板里，关掉等于把解释藏起来，用户只会觉得「点了没反应」。
+                void runTrial().finally(() => {
+                  if (useVpStore.getState().promptWarn) return;
+                  onClose();
+                });
               }}
             >
               {busy === 'current' || busy === 'prompt' || loading ? (

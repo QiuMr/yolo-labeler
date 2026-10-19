@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { VisualPromptDetector, mergePrompts, type VpDetection } from '../ai/visualPrompt';
-import { DinoPromptDetector, mergeProtos, DINO_Z_DEFAULT, type DinoProto } from '../ai/dinoPrompt';
+import {
+  DinoPromptDetector,
+  mergeProtos,
+  dinoFeasibility,
+  DINO_Z_DEFAULT,
+  type DinoProto,
+} from '../ai/dinoPrompt';
 import type { IRect } from '../types';
 import { loadBitmap } from '../utils/imageCache';
 import { fetchWithProgress } from '../utils/modelFetch';
@@ -29,11 +35,12 @@ import { toast } from './toastStore';
  *  · `dino` ：内置 DINOv2 特征匹配 —— 是个**特征提取器**，框内的 patch 特征当语义模板，
  *             在目标图的 patch 特征上滑动匹配。模型本身不输出框，框是外面算出来的。
  *
- * 为什么两条都要：它们擅长的场景不同（同一批图、同一评测口径的实测）——
- *   · 参考图少（1~4 张）：DINOv2 明显更强（k=1 时 F1 0.750 vs NCC 0.153）
- *   · 参考图多（16+）：堆够例子之后 NCC 反超（0.829 vs 0.558）
- *   · YOLOE 是端到端训练过的检测器，对真实照片/复杂场景更稳
- * 用户拿自己的图一比就知道该用哪条，所以两条都留在界面上。
+ * ⚠️ **DINOv2 有一个硬前提：目标在 518 输入上要占够 patch。**
+ * patch 固定 14px、输入固定 518，所以目标在原图上至少要 3*14/gain 像素
+ * （1366 宽的图约 111px）。低于这条线时它会输出几十个乱框且召回归零 ——
+ * 2026-10-19 在真实截图上实测确认（详见 `ai/dinoPrompt.ts` 的 `dinoFeasibility`）。
+ * 那个基于合成数据（目标占 8.3 个 patch）的「参考图少时更强」结论**不能外推到小目标**。
+ * 界面上两条并列，让用户拿自己的图去比；但 DINOv2 这条会先过分辨率守卫。
  */
 export type VpEngine = 'yoloe' | 'dino';
 
@@ -57,7 +64,7 @@ export const VP_ENGINES: readonly VpEngineInfo[] = [
     id: 'dino',
     name: 'DINOv2 特征匹配',
     mb: 85,
-    tagline: '用语义特征做模板匹配，参考图少时更灵',
+    tagline: '用语义特征做模板匹配 —— 只在目标够大时有效',
   },
 ];
 
@@ -112,6 +119,13 @@ interface VpState {
   /** 提示实际用上了几张参考图 / 几个框（可能小于勾选数：没这个类别的图会被跳过） */
   promptRefs: number;
   promptBoxes: number;
+  /**
+   * 拦下这次操作的原因（目前只有 DINOv2 的分辨率守卫）。
+   *
+   * 用持久状态而不是只弹 toast：toast 一闪而过，用户回头看不到「为什么不让跑」，
+   * 只会以为功能坏了。文案由 `dinoFeasibility` 生成，带具体像素数字。
+   */
+  promptWarn: string;
 
   /** 当前引擎的阈值。YOLOE 是置信度（0~1）；DINOv2 是 z 值（1.0~3.5），两者不可比 */
   conf: number;
@@ -185,7 +199,7 @@ function detectWith(p: VpPrompt, bmp: ImageBitmap, conf: number): Promise<VpDete
 /** 清掉已编码的提示（参考图或类别一变，旧提示就失效了） */
 function clearPrompt(set: (p: Partial<VpState>) => void): void {
   prompt = null;
-  set({ promptReady: false, promptRefs: 0, promptBoxes: 0 });
+  set({ promptReady: false, promptRefs: 0, promptBoxes: 0, promptWarn: '' });
 }
 
 export const useVpStore = create<VpState>((set, get) => ({
@@ -202,6 +216,7 @@ export const useVpStore = create<VpState>((set, get) => ({
   promptReady: false,
   promptRefs: 0,
   promptBoxes: 0,
+  promptWarn: '',
 
   conf: loadConf(CONF_KEYS.yoloe) ?? DEFAULT_CONF.yoloe,
   busy: 'none',
@@ -298,10 +313,6 @@ export const useVpStore = create<VpState>((set, get) => ({
   buildPrompt: async () => {
     if (get().busy !== 'none') return;
     const eng = get().engine;
-    if (!(await get().ensureReady())) {
-      toast.error(`模型没准备好：${get().error || '请检查网络后重试'}`);
-      return;
-    }
     const { refImageIds, labelId } = get();
     const cur = useStore.getState();
     const refs = cur.images.filter((i) => refImageIds.includes(i.id));
@@ -325,6 +336,31 @@ export const useVpStore = create<VpState>((set, get) => ({
       return;
     }
 
+    // DINOv2 的**分辨率守卫必须在下载 85MB 之前跑**。
+    // 实测（冒险岛 1366x768、目标 55px）：目标只占 1 个 patch 时召回为 0，
+    // 还会吐 30+ 个乱框。下完模型再拒绝等于让用户白等一场 —— 所以先拦。
+    // 尺寸取真实解码出来的 bitmap，不用 store 里的 width/height（那是懒测量的，可能是 0）。
+    const bitmaps = new Map<string, ImageBitmap>();
+    if (eng === 'dino') {
+      for (const { img, boxes } of usable) {
+        const bmp = await loadBitmap(img);
+        if (!bmp) continue;
+        bitmaps.set(img.id, bmp);
+        const feas = dinoFeasibility(bmp.width, bmp.height, boxes);
+        if (!feas.ok) {
+          clearPrompt(set);
+          set({ promptWarn: feas.reason });
+          toast.warning('DINOv2 用不了这批框 —— 目标太小了（详见面板里的说明）');
+          return;
+        }
+      }
+    }
+
+    if (!(await get().ensureReady())) {
+      toast.error(`模型没准备好：${get().error || '请检查网络后重试'}`);
+      return;
+    }
+
     set({ busy: 'prompt' });
     try {
       let totalBoxes = 0;
@@ -332,7 +368,7 @@ export const useVpStore = create<VpState>((set, get) => ({
       if (eng === 'dino') {
         const protos: DinoProto[] = [];
         for (const { img, boxes } of usable) {
-          const bmp = await loadBitmap(img);
+          const bmp = bitmaps.get(img.id) ?? (await loadBitmap(img));
           if (!bmp) continue;
           protos.push(await dinoDetector.encodePrompt(bmp, boxes));
           totalBoxes += boxes.length;
@@ -352,13 +388,15 @@ export const useVpStore = create<VpState>((set, get) => ({
         prompt = { engine: 'yoloe', vec: mergePrompts(vectors) };
         used = vectors.length;
       }
-      set({ promptReady: true, promptRefs: used, promptBoxes: totalBoxes });
+      set({ promptReady: true, promptRefs: used, promptBoxes: totalBoxes, promptWarn: '' });
       const skipped = refs.length - usable.length;
       if (skipped > 0) {
         toast.info(`有 ${skipped} 张参考图上没有这个类别的框，已跳过`);
       }
     } catch (e) {
       clearPrompt(set);
+      // 守卫的拒绝也要留在界面上 —— 只弹 toast 的话用户回头看不到原因
+      set({ promptWarn: messageOf(e) });
       toast.error(`编码失败：${messageOf(e)}`);
     } finally {
       set({ busy: 'none' });

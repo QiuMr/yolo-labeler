@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:parse": "npx --yes esbuild src/ai/onnxShape.ts src/ai/cocoNames.ts src/utils/yoloDataset.ts src/utils/geometry.ts src/utils/imageSize.ts src/utils/aiBoxes.ts --bundle --format=esm --outdir=.tmp --log-level=error && node test/parse.test.mjs",
+    "test:parse": "npx --yes esbuild src/ai/onnxShape.ts src/ai/cocoNames.ts src/ai/dinoGeometry.ts src/utils/yoloDataset.ts src/utils/geometry.ts src/utils/imageSize.ts src/utils/aiBoxes.ts --bundle --format=esm --outdir=.tmp --log-level=error && node test/parse.test.mjs",
     "test:detector": "npx --yes esbuild src/ai/detector.ts --bundle --format=esm --outfile=.tmp/detector.js --log-level=error && node test/detector.test.mjs",
     "test:unit": "npm run test:parse && npm run test:detector",
     "smoke": "npm run build && node smoke/make-png.mjs && node smoke/smoke.mjs",
