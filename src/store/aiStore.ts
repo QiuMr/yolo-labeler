@@ -33,6 +33,19 @@ export interface AiCandidate {
 export type AiStatus = 'idle' | 'booting' | 'loading' | 'ready' | 'error';
 export type AiBusy = 'none' | 'current' | 'batch';
 
+/**
+ * 一张图的待复核候选框，外加跑批量时的**真实解码尺寸**。
+ *
+ * 尺寸必须一起存：图片的 width/height 是懒测量的，批量时可能还是 0，
+ * 而采纳时要靠它把候选框钳回图内。用候选框自己的外包围盒兜底会钳错
+ * （目标没占满全图时会把框切小），所以宁可当时就记下来。
+ */
+export interface PendingBatch {
+  cands: AiCandidate[];
+  width: number;
+  height: number;
+}
+
 interface AiState {
   status: AiStatus;
   error: string;
@@ -68,6 +81,24 @@ interface AiState {
   candidates: AiCandidate[];
   candidatesImageId: string | null;
 
+  /**
+   * 批量跑出来的候选框，**按图存**（照样子找的批量链路用）。
+   *
+   * 为什么不直接落成标注：批量最大的风险是静默出错 —— 100 张图跑完只看到一句「完成」，
+   * 而实测同一批图 F1 能从 0.000 到 0.750，「一个都没找到」和「找到一堆误报」
+   * 在「完成」里长得一模一样。先攒成候选框，用户看过汇总（含异常标记）再一键采纳，
+   * 既保持了「一键」的速度，也保住了「发现不对能整车退掉」的机会。
+   *
+   * `candidates` 只是**当前图那一份的投影**：切到某张图时从这里取，
+   * 改的时候两边同进同退（见 writeCandidates）—— 否则会出现
+   * 「画布上删掉了，切回来又冒出来」。
+   */
+  pending: Record<string, PendingBatch>;
+  /** 还有候选框待复核的张数（角标用） */
+  pendingImages: number;
+  /** 待复核候选框总数 */
+  pendingBoxes: number;
+
   /** 打开 AI 面板时调用：引导引擎 + 自动找模型（内置 → 上次选过的） */
   init: () => Promise<void>;
   loadModelFile: (file: File) => Promise<void>;
@@ -85,6 +116,14 @@ interface AiState {
    * 分两份状态的话画布要同时读两个来源，两边还会互相盖住。
    */
   setCandidates: (cands: readonly AiCandidate[], imageId: string) => void;
+  /** 批量结果写入 pending（一次一张图） */
+  putPending: (imageId: string, cands: readonly AiCandidate[], width: number, height: number) => void;
+  /** 清空整批待复核结果（重新跑批量之前） */
+  clearPending: () => void;
+  /** 切图时把那张图的候选框装载到「当前」上。批量跑完必须调一次，否则用户翻图看到的是空的 */
+  syncActive: () => void;
+  /** 一键采纳整批：合成一条撤销记录，Ctrl+Z 一次退掉 */
+  acceptPendingAll: () => void;
   runCurrent: () => Promise<void>;
   /** 批量跑：empty=只跑还没有任何框的图；all=所有图都跑（已有框的图会追加） */
   runBatch: (scope?: 'empty' | 'all') => Promise<void>;
@@ -98,6 +137,42 @@ let batchCancelled = false;
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * 写「当前候选框」，并把同一份改动同步进 pending。
+ *
+ * pending 是批量的存底，`candidates` 只是当前图那一份的投影。
+ * 两边必须同进同退，否则会出现「画布上点掉一个框，切到别的图再切回来，它又冒出来了」——
+ * 这种 bug 用户只会理解成「工具自己有主意」。
+ */
+function writeCandidates(
+  set: (p: Partial<AiState>) => void,
+  get: () => AiState,
+  imageId: string | null,
+  cands: readonly AiCandidate[],
+): void {
+  const pending: Record<string, PendingBatch> = { ...get().pending };
+  if (imageId) {
+    if (cands.length > 0) pending[imageId] = { ...pending[imageId], cands: cands.slice() };
+    else delete pending[imageId];
+  }
+  let pendingImages = 0;
+  let pendingBoxes = 0;
+  for (const k in pending) {
+    if (pending[k].cands.length > 0) {
+      pendingImages += 1;
+      pendingBoxes += pending[k].cands.length;
+    }
+  }
+  set({
+    pending,
+    pendingImages,
+    pendingBoxes,
+    candidates: cands.slice(),
+    // 空候选不要留下一个指向某张图的空状态条
+    candidatesImageId: cands.length > 0 ? imageId : null,
+  });
 }
 
 function toCandidates(
@@ -157,6 +232,9 @@ export const useAiStore = create<AiState>((set, get) => {
     batchTotal: 0,
     candidates: [],
     candidatesImageId: null,
+    pending: {},
+    pendingImages: 0,
+    pendingBoxes: 0,
 
     init: async () => {
       const st = get();
@@ -202,22 +280,117 @@ export const useAiStore = create<AiState>((set, get) => {
     },
 
     setCandidates: (cands, imageId) => {
-      set({
-        candidates: cands.slice(),
-        // 空候选不要留下一个指向某张图的空状态条
-        candidatesImageId: cands.length > 0 ? imageId : null,
-      });
+      writeCandidates(set, get, imageId, cands);
+    },
+
+    putPending: (imageId, cands, width, height) => {
+      if (!imageId) return;
+      // 空结果也写：批量汇总要能数出「这张图一个都没找到」
+      const pending: Record<string, PendingBatch> = {
+        ...get().pending,
+        [imageId]: { cands: cands.slice(), width, height },
+      };
+      let pendingImages = 0;
+      let pendingBoxes = 0;
+      for (const k in pending) {
+        if (pending[k].cands.length > 0) {
+          pendingImages += 1;
+          pendingBoxes += pending[k].cands.length;
+        }
+      }
+      set({ pending, pendingImages, pendingBoxes });
+    },
+
+    clearPending: () => {
+      set({ pending: {}, pendingImages: 0, pendingBoxes: 0 });
+    },
+
+    syncActive: () => {
+      const st = get();
+      const images = useStore.getState().images;
+      const img = images[useStore.getState().activeIndex];
+      const id = img?.id ?? null;
+
+      // 顺手清掉已经不在项目里的图。不清的话：批量跑完用户删了几张图，
+      // 角标会一直显示「还有 100 张待确认」，而项目里只剩 95 张 ——
+      // 用户翻遍整个项目也找不到那 5 张，只会以为工具坏了。
+      let pending = st.pending;
+      const alive = new Set(images.map((i) => i.id));
+      for (const k in pending) {
+        if (!alive.has(k)) {
+          if (pending === st.pending) pending = { ...pending };
+          delete pending[k];
+        }
+      }
+      if (pending !== st.pending) {
+        let n = 0;
+        let b = 0;
+        for (const k in pending) {
+          if (pending[k].cands.length > 0) {
+            n += 1;
+            b += pending[k].cands.length;
+          }
+        }
+        set({ pending, pendingImages: n, pendingBoxes: b });
+      }
+
+      // 已经在显示这张图的候选框了：pending 的任何改动都是经 writeCandidates 同步过来的，
+      // 再写一遍只会白跑一次 set。
+      if (st.candidatesImageId === id) return;
+      writeCandidates(set, get, id, id ? (pending[id]?.cands ?? []) : []);
+    },
+
+    acceptPendingAll: () => {
+      const st = get();
+      const entries = Object.entries(st.pending).filter(([, v]) => v.cands.length > 0);
+      if (entries.length === 0) return;
+
+      // 整批合成一条撤销记录：Ctrl+Z 一次退掉整批。
+      // 这也是「先攒候选框再落」相对「边跑边落」唯一多出来的代价 —— 但很值：
+      // 用户在看到汇总之前不会知道这批结果能不能要。
+      useStore.getState().beginAiBatch();
+      let added = 0;
+      let skipped = 0;
+      let touched = 0;
+      let failed = 0;
+      for (const [imageId, p] of entries) {
+        const img = useStore.getState().images.find((i) => i.id === imageId);
+        if (!img) {
+          failed += 1;
+          continue;
+        }
+        try {
+          const res = useStore
+            .getState()
+            .applyAiBoxes(imageId, p.cands, p.width || img.width, p.height || img.height);
+          added += res.added;
+          skipped += res.skipped;
+          if (res.added > 0) touched += 1;
+        } catch {
+          // 单张失败不打断整批，但必须记账
+          failed += 1;
+        }
+      }
+      useStore.getState().endAiBatch();
+
+      set({ pending: {}, pendingImages: 0, pendingBoxes: 0, candidates: [], candidatesImageId: null });
+      const dupSuffix = skipped > 0 ? `，跳过 ${skipped} 个与已有框重复的` : '';
+      if (touched > 0) {
+        const failSuffix = failed > 0 ? `，另有 ${failed} 张没能写入` : '';
+        toast.success(`已采纳 ${touched} 张图、${added} 个框${dupSuffix}（Ctrl+Z 一次撤销整批）${failSuffix}`);
+      } else if (skipped > 0) {
+        toast.info(`这些框都和已有的重复，没有新增${dupSuffix}`);
+      } else {
+        toast.info('没有可采纳的候选框');
+      }
     },
 
     removeCandidate: (index) => {
       const { candidates, candidatesImageId } = get();
       if (index < 0 || index >= candidates.length) return;
-      const next = candidates.filter((_, i) => i !== index);
-      set({
-        candidates: next,
-        // 去掉最后一个候选框后画布上就再没有待确认的东西了，状态条也该收起来
-        candidatesImageId: next.length > 0 ? candidatesImageId : null,
-      });
+      // 经 writeCandidates 回写 pending：只改 candidates 的话，
+      // 切图再切回来这个被点掉的框会复活
+      writeCandidates(set, get, candidatesImageId, candidates.filter((_, i) => i !== index));
     },
 
     setClassName: (index, name) => {
@@ -226,9 +399,20 @@ export const useAiStore = create<AiState>((set, get) => {
       const overrides = get().classNamesOverride.slice();
       while (overrides.length < num) overrides.push('');
       overrides[index] = name;
+      const pending: Record<string, PendingBatch> = {};
+      for (const k in get().pending) {
+        pending[k] = {
+          ...get().pending[k],
+          // 已经算好的候选框要跟着改名，否则用户改完名字、采纳下去的还是旧名
+          cands: get().pending[k].cands.map((c) => ({
+            ...c,
+            className: classNameFor(c.classIndex, num, detector.modelNames, overrides),
+          })),
+        };
+      }
       set({
         classNamesOverride: overrides,
-        // 已经算好的候选框要跟着改名，否则用户改完名字、采纳下去的还是旧名
+        pending,
         candidates: get().candidates.map((c) => ({
           ...c,
           className: classNameFor(c.classIndex, num, detector.modelNames, overrides),
@@ -254,10 +438,9 @@ export const useAiStore = create<AiState>((set, get) => {
           return;
         }
         const dets = await detector.detect(bmp, st.conf);
+        writeCandidates(set, get, img.id, toCandidates(dets, get().classNamesOverride));
         set({
           numClasses: detector.numClasses,
-          candidates: toCandidates(dets, get().classNamesOverride),
-          candidatesImageId: img.id,
           layoutInfo: detector.layoutInfo,
           inputSizeFrom: detector.inputSizeFrom,
         });
@@ -287,9 +470,14 @@ export const useAiStore = create<AiState>((set, get) => {
         busy: 'batch',
         batchDone: 0,
         batchTotal: targets.length,
-        // 避免旧候选框和批量结果在同一张图上叠加
+        // 避免旧候选框和批量结果在同一张图上叠加。
+        // pending 也一起清：这条链路是「边跑边落」，不留待复核的存底，
+        // 否则上一批没采纳的候选会一直挂在计数上。
         candidates: [],
         candidatesImageId: null,
+        pending: {},
+        pendingImages: 0,
+        pendingBoxes: 0,
       });
 
       let boxCount = 0;
@@ -367,7 +555,8 @@ export const useAiStore = create<AiState>((set, get) => {
       if (!candidatesImageId || candidates.length === 0) return;
       const img = useStore.getState().images.find((i) => i.id === candidatesImageId);
       if (!img) {
-        set({ candidates: [], candidatesImageId: null });
+        // 图被删了：候选框跟着作废，pending 里那一份也要清，不然计数下不去
+        writeCandidates(set, get, candidatesImageId, []);
         return;
       }
       // 图片尺寸正常都已解码登记；极端缺失时用候选框外包围盒兜底
@@ -383,14 +572,30 @@ export const useAiStore = create<AiState>((set, get) => {
       }
       if (w <= 0 || h <= 0) return;
       const res = useStore.getState().applyAiBoxes(candidatesImageId, candidates, w, h);
-      set({ candidates: [], candidatesImageId: null });
+      // 采纳掉的要从 pending 里移除，否则「待复核」计数一直不减
+      writeCandidates(set, get, candidatesImageId, []);
       const dup = res.skipped > 0 ? `，跳过 ${res.skipped} 个重复的` : '';
       if (res.added > 0) toast.success(`已添加 ${res.added} 个标注框${dup}`);
       else if (res.skipped > 0) toast.info(`这些框都和已有的重复，没有新增${dup}`);
     },
 
     discardCandidates: () => {
-      set({ candidates: [], candidatesImageId: null });
+      const { candidatesImageId } = get();
+      writeCandidates(set, get, candidatesImageId, []);
     },
   };
+});
+
+/**
+ * 切图时自动装载那张图的待复核候选框。
+ *
+ * 没有这一步，批量跑完用户翻到第 50 张图，画布是空的 —— 他会以为没跑，
+ * 于是把整批结果当垃圾丢掉。装在 store 模块里而不是某个组件的 effect 里：
+ * 换图的入口有好几个（侧栏、键盘方向键、导出面板里的跳转、批量汇总里的跳转），
+ * 逐个挂 effect 必然漏。
+ */
+useStore.subscribe((s, prev) => {
+  const a = s.images[s.activeIndex]?.id ?? null;
+  const b = prev.images[prev.activeIndex]?.id ?? null;
+  if (a !== b) useAiStore.getState().syncActive();
 });

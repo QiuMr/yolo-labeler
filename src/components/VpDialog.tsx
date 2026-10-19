@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Check,
   ChevronRight,
+  ClipboardCheck,
   Cpu,
   Loader2,
   RefreshCw,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useVpStore, VP_ENGINES, modelMbOf } from '../store/vpStore';
+import { useAiStore } from '../store/aiStore';
 import { percentFromZ, zFromPercent, dinoFeasibility } from '../ai/dinoPrompt';
 import { Button } from '@/components/ui/button';
 import {
@@ -73,9 +75,16 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
   const runTrial = useVpStore((s) => s.runTrial);
   const runBatch = useVpStore((s) => s.runBatch);
   const cancelBatch = useVpStore((s) => s.cancelBatch);
+  const acceptBatch = useVpStore((s) => s.acceptBatch);
+  const gotoFlagged = useVpStore((s) => s.gotoFlagged);
+  const batchSummary = useVpStore((s) => s.batchSummary);
+  const batchFlags = useVpStore((s) => s.batchFlags);
+  const pendingImages = useAiStore((s) => s.pendingImages);
+  const pendingBoxes = useAiStore((s) => s.pendingBoxes);
 
   const labels = useStore((s) => s.labels);
   const totalImages = useStore((s) => s.images.length);
+  const allImages = useStore((s) => s.images);
   const labelRevision = useStore((s) => s.labelRevision);
   /** 已有框的图 = 可以当参考的图。用 useMemo 避免每次 store 变更都把整个图集数一遍 */
   const labeled = useMemo(
@@ -461,6 +470,100 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               停止
             </Button>
           </div>
+        ) : batchSummary ? (
+          /* ===== 批量汇总 / 复核 =====
+             这一段是「玩具」和「工具」的分界。批量最大的风险不是慢，是**静默出错**：
+             100 张图跑完只看到一句「完成」，用户就会默认它是好的。而实测里同一批图
+             F1 能从 0.000 到 0.750 ——「一个都没找到」和「找到一堆误报」在「完成」
+             这句话里长得一模一样。所以要把可疑的张数单独点出来，并且说清为什么可疑。
+
+             为什么不直接落框：先攒成候选框，用户看过汇总再一键采纳，
+             保持了「一键」的速度，也保住了「发现不对能整批退掉」的机会。 */
+          <div
+            data-vp-review
+            className="rounded-[16px] border border-line bg-card px-4 py-3.5 [box-shadow:var(--shadow-xs)]"
+          >
+            <div className="flex items-center gap-1.5">
+              <ClipboardCheck className="size-[15px] flex-shrink-0 text-primary" />
+              <span className="text-caption font-bold text-ink-2">批量结果待你确认</span>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-ink-3">
+              {pendingImages > 0 ? (
+                <>
+                  <span>
+                    <span className="num font-bold text-foreground">{pendingImages}</span> 张图
+                  </span>
+                  <span>
+                    <span className="num font-bold text-foreground">{pendingBoxes}</span> 个框
+                  </span>
+                </>
+              ) : (
+                <span>这批已经处理完了 —— 候选框都已被采纳或忽略。</span>
+              )}
+              {batchSummary.empty > 0 ? (
+                <span className="text-amber-600">{batchSummary.empty} 张没找到</span>
+              ) : null}
+              {batchSummary.failed > 0 ? (
+                <span className="text-destructive">{batchSummary.failed} 张失败</span>
+              ) : null}
+            </div>
+
+            {batchSummary.flags.length > 0 ? (
+              <div className="mt-2.5">
+                <div className="flex items-center gap-1.5 text-caption font-bold text-amber-600">
+                  <AlertTriangle className="size-[13px]" />
+                  这 {batchSummary.flags.length} 张建议重点看
+                </div>
+                <div className="mt-1.5 max-h-[150px] space-y-1 overflow-y-auto pr-0.5">
+                  {batchSummary.flags.map((f) => {
+                    const img = allImages.find((i) => i.id === f.imageId);
+                    return (
+                      <button
+                        key={f.imageId}
+                        type="button"
+                        data-vp-flag={f.imageId}
+                        onClick={() => {
+                          gotoFlagged(f.imageId);
+                          onClose();
+                        }}
+                        className="w-full rounded-[10px] border border-amber-400/25 bg-amber-400/[0.07] px-2.5 py-[7px] text-left transition-colors hover:border-amber-400/50"
+                      >
+                        <div className="truncate text-caption font-semibold text-ink-2">
+                          {img?.name ?? '（已删除的图片）'}
+                        </div>
+                        <div className="mt-0.5 text-micro leading-relaxed text-ink-3">
+                          {batchFlags[f.imageId]}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <p className="mt-2 text-micro leading-relaxed text-ink-4">
+                各张图的框数和分数都在正常范围内，没有发现异常。
+              </p>
+            )}
+
+            <div className="mt-3 grid gap-2">
+              <Button
+                data-vp-accept-batch
+                disabled={pendingImages === 0}
+                onClick={acceptBatch}
+              >
+                <Check />
+                全部采纳（{pendingBoxes} 个框）
+              </Button>
+              <Button data-vp-review-one variant="outline" onClick={onClose}>
+                <ScanSearch />
+                逐张复核
+              </Button>
+              <p className="text-center text-micro text-ink-4">
+                采纳后 Ctrl+Z 一次撤销整批 · 切到任意图都能看到并修改它的候选框
+              </p>
+            </div>
+          </div>
         ) : (
           <div className="grid gap-2">
             <Button
@@ -489,6 +592,8 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
             <div className="flex rounded-[14px] border border-border bg-card p-[3px] [box-shadow:var(--shadow-xs)]">
               <button
                 type="button"
+                data-vp-scope="empty"
+                data-vp-scope-on={batchScope === 'empty' ? '1' : '0'}
                 onClick={() => setBatchScope('empty')}
                 disabled={working}
                 className={`flex-1 rounded-[10px] px-2 py-[5px] text-caption font-semibold transition-colors disabled:opacity-50 ${
@@ -499,6 +604,8 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               </button>
               <button
                 type="button"
+                data-vp-scope="all"
+                data-vp-scope-on={batchScope === 'all' ? '1' : '0'}
                 onClick={() => setBatchScope('all')}
                 disabled={working}
                 className={`flex-1 rounded-[10px] px-2 py-[5px] text-caption font-semibold transition-colors disabled:opacity-50 ${
@@ -521,6 +628,9 @@ export function VpDialog({ open, onClose }: VpDialogProps) {
               {promptReady
                 ? `例子已就绪（${promptRefs} 张图 · ${promptBoxes} 个框）`
                 : '选好参考图和类别即可开始 · 参考图本身不会被重标'}
+            </p>
+            <p className="text-center text-micro text-ink-4">
+              批量不会直接改你的标注：跑完先给你一份汇总，确认后再一键采纳
             </p>
           </div>
         )}

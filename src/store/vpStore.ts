@@ -7,10 +7,17 @@ import {
   DINO_Z_DEFAULT,
   type DinoProto,
 } from '../ai/dinoPrompt';
-import type { IRect } from '../types';
+import type { Annotation, IRect } from '../types';
 import { loadBitmap } from '../utils/imageCache';
 import { fetchWithProgress } from '../utils/modelFetch';
 import { loadConf, saveConf } from '../utils/modelStore';
+import { buildAiAnnotations } from '../utils/aiBoxes';
+import {
+  summarizeBatch,
+  batchHeadline,
+  type VpBatchStat,
+  type VpBatchSummary,
+} from '../utils/vpBatch';
 import { useAiStore, type AiCandidate } from './aiStore';
 import { useStore } from './useStore';
 import { toast } from './toastStore';
@@ -134,6 +141,13 @@ interface VpState {
   batchTotal: number;
   /** 试标结果落在哪张图（界面据此提示「去那张图看看」） */
   trialImageId: string | null;
+  /**
+   * 上一次批量的汇总。批量跑完留着不擦，用户关掉面板再回来还能看到「哪几张要重点看」。
+   * 跑新的批量时会被覆盖。
+   */
+  batchSummary: VpBatchSummary | null;
+  /** 异常图的原因，按 imageId 索引（batchSummary.flags 的查找表） */
+  batchFlags: Record<string, string>;
 
   /** 切换引擎：清掉已编码的提示，阈值按引擎各自恢复 */
   setEngine: (e: VpEngine) => void;
@@ -148,9 +162,13 @@ interface VpState {
   buildPrompt: () => Promise<void>;
   /** 先只标一张给用户过目 */
   runTrial: () => Promise<void>;
-  /** 批量跑（会排除参考图本身） */
+  /** 批量跑（会排除参考图本身）。结果先攒成待复核候选框，不直接落框 */
   runBatch: (scope?: 'empty' | 'all') => Promise<void>;
   cancelBatch: () => void;
+  /** 采纳整批待复核候选框（合成一条撤销） */
+  acceptBatch: () => void;
+  /** 跳到某张图去复核它的候选框 */
+  gotoFlagged: (imageId: string) => void;
 }
 
 /** 两个引擎各一个实例：会话互不影响，切回来时不必重新下载 */
@@ -189,6 +207,49 @@ function toCandidates(dets: readonly VpDetection[], className: string): AiCandid
   }));
 }
 
+/**
+ * 干跑一遍落框逻辑，返回**将来真会落下的那些框**。
+ *
+ * 为什么不直接存原始检测结果 —— 有三个坑，全都在用户那边才炸：
+ *  · 越界的框：letterbox 反算出的坐标偶尔偏出图外，导出的 YOLO 标签会超出 0~1；
+ *  · 退化的框（宽或高 < 2px）：手工画框时都不许入库，AI 的却进来了；
+ *  · 与已有框重复：「调低阈值再跑一遍」是标注调优的标准动作，
+ *    纯追加会让同一物体挂两个框，用户只能手工删（这条规则的理由见 utils/aiBoxes.ts）。
+ *
+ * 落框时本来就会走一遍这套规则（useStore.applyAiBoxes → buildAiAnnotations）；
+ * 批量只是**提前**走，好处是用户在看汇总时看到的就是最终会落下的数量，
+ * 不会出现「汇总说 412 个框，采纳完变成 391 个」这种对不上账的事。
+ */
+function dryRunCandidates(
+  existing: readonly Annotation[],
+  width: number,
+  height: number,
+  dets: readonly VpDetection[],
+  className: string,
+): AiCandidate[] {
+  const st = useStore.getState();
+  // 用一份**本地**标签表：这一步只是数框，不该真的往用户的类别表里插东西。
+  // 类别还不存在时 existing 里也不可能有它，所以 createLabel 永远不会被调到。
+  const labels = st.labels.slice();
+  const nameToId = new Map(labels.map((l) => [l.name, l.id] as const));
+  const { anns } = buildAiAnnotations({
+    existing,
+    entries: dets.map((d) => ({ rect: d.rect, className, score: d.score })),
+    labels,
+    nameToId,
+    width,
+    height,
+    createLabel: () => ({ id: 'vp-dryrun', name: className, color: '#888888' }),
+    createId: () => 'vp-dryrun',
+  });
+  return anns.map((a) => ({
+    rect: a.rect,
+    score: a.score ?? 0,
+    className,
+    classIndex: 0,
+  }));
+}
+
 /** 按提示自带的 engine tag 分派到对应检测器（类型收窄由联合类型保证） */
 function detectWith(p: VpPrompt, bmp: ImageBitmap, conf: number): Promise<VpDetection[]> {
   return p.engine === 'dino'
@@ -223,6 +284,8 @@ export const useVpStore = create<VpState>((set, get) => ({
   batchDone: 0,
   batchTotal: 0,
   trialImageId: null,
+  batchSummary: null,
+  batchFlags: {},
 
   setEngine: (e) => {
     if (get().engine === e) return;
@@ -477,58 +540,72 @@ export const useVpStore = create<VpState>((set, get) => ({
       batchTotal: targets.length,
       // 试标留下的候选框不该和批量结果叠在同一张图上
       trialImageId: null,
+      batchSummary: null,
+      batchFlags: {},
     });
-    useAiStore.getState().setCandidates([], '');
+    // 上一批没采纳的候选框作废：用户点了新的批量，就等于重新要一批
+    useAiStore.getState().clearPending();
 
-    let boxCount = 0;
-    let touched = 0;
-    let failed = 0;
-    let dupSkipped = 0;
+    const stats: VpBatchStat[] = [];
     let i = 0;
-    // 整批合成一条撤销记录：Ctrl+Z 一次退掉整批
-    useStore.getState().beginAiBatch();
     for (const img of targets) {
       if (batchCancelled) break;
       i += 1;
-      const bmp = await loadBitmap(img);
+      let bmp: ImageBitmap | null = null;
+      try {
+        bmp = await loadBitmap(img);
+      } catch {
+        bmp = null;
+      }
       if (!bmp) {
-        failed += 1;
+        // 解码失败要单独记账：用户分不清「模型没识别到」和「这张图打不开」
+        stats.push({ imageId: img.id, count: 0, meanScore: 0, failed: true });
         set({ batchDone: i });
         continue;
       }
       try {
         const dets = await detectWith(prompt!, bmp, get().conf);
-        if (dets.length > 0) {
-          const res = useStore
-            .getState()
-            .applyAiBoxes(img.id, toCandidates(dets, labelName), bmp.width, bmp.height);
-          boxCount += res.added;
-          dupSkipped += res.skipped;
-          if (res.added > 0) touched += 1;
-        }
+        const cands = dryRunCandidates(
+          img.annotations,
+          bmp.width,
+          bmp.height,
+          dets,
+          labelName,
+        );
+        // 一张都没找到也要写：汇总里的「N 张没找到」靠这个计数，
+        // 而它是用户最需要看到的一类（可能这张图真的没有，也可能例子选错了）。
+        useAiStore.getState().putPending(img.id, cands, bmp.width, bmp.height);
+        stats.push({
+          imageId: img.id,
+          count: cands.length,
+          meanScore: cands.length > 0 ? cands.reduce((n, c) => n + c.score, 0) / cands.length : 0,
+          failed: false,
+        });
       } catch {
         // 单张失败不打断整批，但必须记账
-        failed += 1;
+        stats.push({ imageId: img.id, count: 0, meanScore: 0, failed: true });
       }
       set({ batchDone: i });
       // 每 3 张让出一次控制权，否则整个批次里浏览器一次都没 paint 过
       if (i % 3 === 0) await new Promise((r) => setTimeout(r, 0));
     }
-    useStore.getState().endAiBatch();
 
-    set({ busy: 'none' });
-    const dupSuffix = dupSkipped > 0 ? `，跳过 ${dupSkipped} 个与已有框重复的` : '';
+    const summary = summarizeBatch(stats);
+    const flags: Record<string, string> = {};
+    for (const f of summary.flags) flags[f.imageId] = f.reason;
+    set({ busy: 'none', batchSummary: summary, batchFlags: flags });
+    // 把当前图的候选框装上：用户此时多半正停在某张图上，不装的话画布是空的
+    useAiStore.getState().syncActive();
+
     if (batchCancelled) {
-      toast.info(`已停止，本次共标注 ${touched} 张图${dupSuffix}`);
-    } else if (touched > 0) {
-      const suffix = failed > 0 ? `，另有 ${failed} 张推理失败（多为图片损坏或内存不足）` : '';
-      toast.success(
-        `照样子找完成：${touched} 张图、${boxCount} 个框${dupSuffix}（Ctrl+Z 一次撤销整批）${suffix}`,
-      );
-    } else if (dupSkipped > 0) {
-      toast.info(`找到的目标都已经有框了，又跳过 ${dupSkipped} 个重复的，没有新增`);
-    } else if (failed > 0) {
-      toast.warning(`${failed} 张图推理失败，没有成功标注任何一张（多为图片损坏或内存不足）`);
+      const done = useAiStore.getState().pendingImages;
+      toast.info(`已停止，${done} 张图有候选框待复核`);
+    } else if (summary.withBoxes > 0) {
+      const flagNote = summary.flags.length > 0 ? `，其中 ${summary.flags.length} 张建议重点看` : '';
+      const failNote = summary.failed > 0 ? `，${summary.failed} 张失败` : '';
+      toast.success(`照样子找完成：${batchHeadline(summary)}${flagNote}${failNote}`);
+    } else if (summary.failed > 0) {
+      toast.warning(`${summary.failed} 张图失败，没有找到任何目标（多为图片损坏或内存不足）`);
     } else {
       toast.info('这批图里没找到像它的东西。换一张参考图通常比调阈值更有效。');
     }
@@ -536,5 +613,16 @@ export const useVpStore = create<VpState>((set, get) => ({
 
   cancelBatch: () => {
     batchCancelled = true;
+  },
+
+  acceptBatch: () => {
+    useAiStore.getState().acceptPendingAll();
+    // 采纳完就没有「待复核」了，汇总面板该让位给「已采纳」的干净状态
+    set({ batchSummary: null, batchFlags: {} });
+  },
+
+  gotoFlagged: (imageId) => {
+    const idx = useStore.getState().images.findIndex((i) => i.id === imageId);
+    if (idx >= 0) useStore.getState().setActiveIndex(idx);
   },
 }));

@@ -491,6 +491,7 @@ try {
         refs: document.querySelectorAll('[data-vp-ref]').length,
         refOn: document.querySelectorAll('[data-vp-ref-on="1"]').length,
         labels: document.querySelectorAll('[data-vp-label]').length,
+        scopes: document.querySelectorAll('[data-vp-scope]').length,
         trial: !!trial,
         batch: !!batch,
         // 存在 ≠ 可用。模型是「点了按钮才下载」的，所以首次打开时
@@ -499,6 +500,11 @@ try {
         // 这里只读 disabled，**不点**：点了会真去下 20MB 模型。
         trialEnabled: !!trial && trial.disabled === false,
         batchEnabled: !!batch && batch.disabled === false,
+        // 批量不再边跑边改标注，而是先攒候选框 + 汇总。
+        // 这句话必须出现在面板上：看不到它，用户不会知道自己还有一次反悔的机会。
+        batchCopy: (document.querySelector('[data-vp-panel]')?.innerText || '').includes(
+          '\\u4e0d\\u4f1a\\u76f4\\u63a5\\u6539\\u4f60\\u7684\\u6807\\u6ce8',
+        ),
       };
     })()
   `);
@@ -512,6 +518,8 @@ try {
     vp.trialEnabled === true && vp.batchEnabled === true,
     JSON.stringify(vp),
   );
+  check('batch scope toggle rendered (仅未标注 / 全部重跑)', vp.scopes === 2, JSON.stringify(vp));
+  check('batch copy says it will not write annotations directly', vp.batchCopy === true, JSON.stringify(vp));
 
   // ---- 9c. 引擎切换（YOLOE 20MB / DINOv2 85MB）-----------------------------
   // 两条链路的原理不同、擅长的场景不同，界面上并列摆出来让用户自己比。

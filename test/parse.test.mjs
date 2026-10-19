@@ -16,6 +16,14 @@ import {
   baseKey,
   parseYoloDataset,
 } from '../.tmp/utils/yoloDataset.js';
+import {
+  medianOf,
+  manyThreshold,
+  lowConfThreshold,
+  summarizeBatch,
+  batchHeadline,
+  MIN_STATS_SAMPLE,
+} from '../.tmp/utils/vpBatch.js';
 
 let pass = 0;
 let fail = 0;
@@ -568,6 +576,112 @@ check(
   [false, ''],
 );
 check('没有框时不报错也不放行', dinoFeasibility(100, 100, []).ok, false);
+
+// ==================== 批量汇总 / 异常标记 ====================
+// 这一段守的是「跑完之后用户知道该看哪几张」。阈值写错不会报错，
+// 只会静默地难用（要么一张都不标，要么标满误报），所以必须逐条钉住。
+
+check('中位数：奇数个取中间', medianOf([3, 1, 2]), 2);
+check('中位数：偶数个取中间两个的均值', medianOf([1, 2, 3, 4]), 2.5);
+check('中位数：空数组返回 0 而不是抛异常', medianOf([]), 0);
+
+// 「框特别多」的判定线：3 倍中位数，但有 4 的下限 ——
+// 稀疏目标（中位数 1~2）的图里多找出一个常常是真的，不能当成异常
+check('多框线：中位数 5 → 15', manyThreshold(5), 15);
+check('多框线：中位数 2 → 6（3 倍，仍高于 4 的下限）', manyThreshold(2), 6);
+check('多框线：中位数 1 → 兜底 4（3 个框不算异常）', manyThreshold(1), 4);
+check('多框线：中位数 0 → 兜底 4', manyThreshold(0), 4);
+
+check('低分线：中位分的 70%', lowConfThreshold(0.6), 0.42);
+
+const stat = (imageId, count, meanScore = 0.6, failed = false) => ({
+  imageId,
+  count,
+  meanScore,
+  failed,
+});
+
+// 全批只有 2 张有框 → 够不上 MIN_STATS_SAMPLE，一张都不标。
+// 这是故意的：2 个样本的中位数没有意义，硬标只会制造狼来了。
+{
+  const s = summarizeBatch([stat('a', 3), stat('b', 3)]);
+  check('样本不足 3 张时不标异常', [s.withBoxes, s.flags.length], [2, 0]);
+  check('样本不足时中位数仍然给出（供文案用）', s.median, 3);
+}
+
+// 门槛是硬边界：少一张不标，够数就标
+check('门槛值本身是 3', MIN_STATS_SAMPLE, 3);
+check(
+  '恰好 3 张有框时开始标记',
+  summarizeBatch([stat('a', 3), stat('b', 3), stat('c', 30)]).flags.map((f) => f.imageId),
+  ['c'],
+);
+
+// 典型场景：8 张图里 6 张正常（3 个框左右）、1 张空、1 张框数爆炸、1 张解码失败。
+// 注意「框数爆炸」那张也计入 withBoxes 和中位数 —— 它确实产出了框，
+// 汇总必须如实反映，不能为了数字好看把它剔出去。
+{
+  const s = summarizeBatch([
+    stat('n1', 3),
+    stat('n2', 4),
+    stat('n3', 3),
+    stat('n4', 5),
+    stat('n5', 4),
+    stat('n6', 3),
+    stat('empty', 0),
+    stat('spam', 18),
+    stat('bad', 0, 0, true),
+  ]);
+  check('汇总：有框张数', s.withBoxes, 7);
+  check('汇总：框总数', s.total, 40);
+  check('汇总：没找到的张数（不含失败）', s.empty, 1);
+  check('汇总：失败张数单独计', s.failed, 1);
+  check('汇总：框数中位数（含没找到的图）', s.median, 3.5);
+  check('汇总：只标出异常的那一张', s.flags.map((f) => f.imageId), ['spam']);
+  check('异常原因带具体倍数', s.flags[0].reason, '找到 18 个，是其他图的 5 倍 —— 多半是误报，建议重点看');
+}
+
+// 中位数为 0 时（多数图都没找到）倍数会除零 → 必须换成另一套文案，不能出现 Infinity/NaN。
+// 这一条同时守一个真实缺陷：整批基本全空时，「唯独某张图找出一堆」是最强的异常信号，
+// 早期版本被「样本不足 3 张」的规则挡掉，等于把最危险的情况静默放过了。
+{
+  const s = summarizeBatch([stat('a', 0), stat('b', 0), stat('c', 0), stat('d', 7), stat('e', 0)]);
+  check('中位数为 0 时仍能标记（不被样本量规则挡住）', s.flags.map((f) => f.imageId), ['d']);
+  check('中位数为 0 时倍数文案不出现 NaN/Infinity', /NaN|Infinity/.test(s.flags[0].reason), false);
+}
+
+// 低分异常：框数正常但平均分只有中位分的四成
+{
+  const s = summarizeBatch([stat('a', 3, 0.8), stat('b', 3, 0.75), stat('c', 4, 0.7), stat('d', 3, 0.3)]);
+  check('低分异常被标出', s.flags.map((f) => [f.imageId, f.kind]), [['d', 'lowconf']]);
+  check('低分原因带百分比', s.flags[0].reason, '找到 3 个，但平均分只有其他图的 41% —— 多半是勉强凑数的，建议重点看');
+}
+
+// 「没找到」不参与异常判定，但必须能在 empty 里数出来
+{
+  const s = summarizeBatch([stat('a', 3), stat('b', 0), stat('c', 0), stat('d', 0), stat('e', 2)]);
+  check('全空不算异常标记', s.flags.length, 0);
+  check('全空计入 empty', s.empty, 3);
+}
+
+// 一张图可以既多又分低，但 UI 只显示最值得看的那条 → many 优先
+{
+  const s = summarizeBatch([
+    stat('a', 3, 0.8),
+    stat('b', 3, 0.8),
+    stat('c', 3, 0.8),
+    stat('d', 20, 0.2),
+  ]);
+  check('同时命中两条时 many 优先', [s.flags.length, s.flags[0].kind], [1, 'many']);
+}
+
+check('标题：正常一批', batchHeadline(summarizeBatch([stat('a', 3), stat('b', 4), stat('c', 5)])), '3 张图、12 个框');
+check('标题：全没找到', batchHeadline(summarizeBatch([stat('a', 0), stat('b', 0), stat('c', 0)])), '这批图里没找到像它的东西');
+check(
+  '标题：混合三种情况都要说',
+  batchHeadline(summarizeBatch([stat('a', 3), stat('b', 0), stat('c', 0, 0, true), stat('d', 2)])),
+  '2 张图、5 个框 · 1 张没找到 · 1 张失败',
+);
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 if (fail > 0) process.exit(1);

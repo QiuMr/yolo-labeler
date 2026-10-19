@@ -66,6 +66,7 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
   const busy = useAiStore((s) => s.busy);
   const batchDone = useAiStore((s) => s.batchDone);
   const batchTotal = useAiStore((s) => s.batchTotal);
+  const pendingImages = useAiStore((s) => s.pendingImages);
 
   const init = useAiStore((s) => s.init);
   const loadModelFile = useAiStore((s) => s.loadModelFile);
@@ -176,7 +177,11 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
         {/* 另一条 AI 链路：不需要用户准备任何文件，也不需要训练。
             放在最上面而不是折叠里 —— 对多数人来说这才是真能用的那条路：
             下面那条要自备 .onnx，而绝大多数人手上根本没有。
-            批量进行中禁用：那时候关掉这个面板会看不到进度、也没法中途停止。 */}
+            批量进行中禁用：那时候关掉这个面板会看不到进度、也没法中途停止。
+
+            有待复核的批量结果时挂个角标：批量跑完用户会关掉面板去翻图，
+            回来时若没有一个显眼的路标，「还有 N 张没确认」这件事就彻底隐身了，
+            而这批候选框会一直挂在画布上，用户只会觉得「多了些虚线框，不知道哪来的」。 */}
         <button
           type="button"
           data-vp-entry
@@ -188,11 +193,21 @@ export function AiDialog({ open, onClose, onVp }: AiDialogProps) {
             <ScanSearch className="size-[17px]" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-caption font-bold text-ink-2">
+            <span className="flex items-center gap-1.5 text-caption font-bold text-ink-2">
               照样子找 · 不用任何文件
+              {pendingImages > 0 ? (
+                <span
+                  data-vp-pending
+                  className="num rounded-full bg-amber-400/20 px-1.5 py-[1px] text-micro font-bold text-amber-600"
+                >
+                  {pendingImages} 张待确认
+                </span>
+              ) : null}
             </span>
             <span className="mt-0.5 block text-micro leading-relaxed text-ink-3">
-              标好几张图之后，让工具照着样子把剩下的找出来 · 内置两种引擎，不用训练
+              {pendingImages > 0
+                ? `上次批量的结果还在等你确认 —— 点这里看汇总，或直接一键采纳`
+                : '标好几张图之后，让工具照着样子把剩下的找出来 · 内置两种引擎，不用训练'}
             </span>
           </span>
           <ChevronRight className="size-4 flex-shrink-0 text-ink-4" />

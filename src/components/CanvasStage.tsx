@@ -181,6 +181,7 @@ export function CanvasStage() {
     s.candidatesImageId === imageId ? s.candidates : null,
   );
   const aiBusy = useAiStore((s) => s.busy);
+  const aiPendingImages = useAiStore((s) => s.pendingImages);
   const aiAcceptAll = useAiStore((s) => s.acceptAll);
   const aiDiscard = useAiStore((s) => s.discardCandidates);
 
@@ -1220,6 +1221,16 @@ export function CanvasStage() {
           <span className="hidden whitespace-nowrap text-micro text-white/45 md:inline">
             点框可去掉不要的
           </span>
+          {/* 批量语境下必须让人知道「不止这一张」：否则用户只会一张张往下翻，
+              翻到第 30 张发现还有候选框，会以为工具自己冒出很多东西来 */}
+          {aiPendingImages > 1 ? (
+            <span
+              data-ai-pending
+              className="num hidden whitespace-nowrap text-micro text-sky-200/80 md:inline"
+            >
+              全批共 {aiPendingImages} 张待确认
+            </span>
+          ) : null}
           <button
             type="button"
             onClick={aiAcceptAll}
